@@ -1,18 +1,12 @@
-"""
-Web server for multi-robot charging simulation with canvas visualization.
-Complete rewrite with visual path planning.
-"""
-
 import asyncio
-import json
+import uvicorn
 from typing import Dict, Optional, Set
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from contextlib import asynccontextmanager
 
 from sim.model import ChargingSimulationModel
-from sim.scenarios import get_scenario
-
+from sim.scenarios import get_scenario, list_scenarios
 
 # Global state
 simulation_model: Optional[ChargingSimulationModel] = None
@@ -21,12 +15,10 @@ simulation_paused = False
 simulation_speed = 2.0
 active_connections: Set[WebSocket] = set()
 
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifespan context manager."""
     yield
-    # Cleanup on shutdown
     for ws in list(active_connections):
         await ws.close()
 
@@ -38,6 +30,12 @@ app = FastAPI(lifespan=lifespan)
 async def get():
     """Serve the main HTML page."""
     return HTMLResponse(HTML_TEMPLATE)
+
+
+@app.get("/api/scenarios")
+async def get_scenarios():
+    """Get list of available scenarios."""
+    return {"scenarios": list_scenarios()}
 
 
 @app.websocket("/ws")
@@ -71,12 +69,19 @@ async def handle_message(data: dict, websocket: WebSocket):
     msg_type = data.get("type")
     
     if msg_type == "start":
-        scenario = data.get("scenario", "simple")
+        scenario = data.get("scenario", "scenario_1_simple")
         simulation_speed = data.get("speed", 2.0)
         
-        # Create new simulation
-        grid, vehicle_positions, _ = get_scenario(scenario)
-        simulation_model = ChargingSimulationModel(grid, vehicle_positions)
+        # Create new simulation from scenario config
+        scenario_config = get_scenario(scenario)
+        simulation_model = ChargingSimulationModel(
+            grid=scenario_config.grid,
+            initial_vehicle_positions=scenario_config.vehicle_positions,
+            initial_battery_levels=scenario_config.vehicle_batteries,
+            scenario_name=scenario_config.name,
+            scenario_description=scenario_config.description,
+            step_delay=scenario_config.step_delay
+        )
         
         simulation_running = True
         simulation_paused = False
@@ -94,10 +99,19 @@ async def handle_message(data: dict, websocket: WebSocket):
         simulation_paused = False
         
     elif msg_type == "reset":
-        scenario = data.get("scenario", "simple")
-        grid, vehicle_positions, _ = get_scenario(scenario)
-        simulation_model = ChargingSimulationModel(grid, vehicle_positions)
+        scenario = data.get("scenario", "scenario_1_simple")
+        scenario_config = get_scenario(scenario)
+        simulation_model = ChargingSimulationModel(
+            grid=scenario_config.grid,
+            initial_vehicle_positions=scenario_config.vehicle_positions,
+            initial_battery_levels=scenario_config.vehicle_batteries,
+            scenario_name=scenario_config.name,
+            scenario_description=scenario_config.description,
+            step_delay=scenario_config.step_delay
+        )
         simulation_running = False
+        simulation_paused = False
+        await broadcast_state()
         simulation_paused = False
         await broadcast_state()
         
@@ -132,8 +146,11 @@ async def run_simulation():
                 traceback.print_exc()
                 simulation_running = False
         
-        # Very short sleep for real-time feel (10-20 FPS)
-        await asyncio.sleep(0.05)  # 20 FPS regardless of speed setting
+        # Use the scenario's step delay for better observation
+        if simulation_model and hasattr(simulation_model, 'step_delay'):
+            await asyncio.sleep(simulation_model.step_delay)
+        else:
+            await asyncio.sleep(0.3)  # Default delay
 
 
 async def broadcast_state():
@@ -545,15 +562,14 @@ HTML_TEMPLATE = """
     <div class="container">
         <!-- Header -->
         <header>
-            <h1>🤖 Multi-Robot Charging Simulation</h1>
-            <p>Visual path planning with A* algorithm and Hungarian assignment</p>
+            <h1>Multi-Robot Charging Simulation</h1>
         </header>
         
         <!-- Agent Logs - Top Priority -->
         <div class="logs-section">
             <div class="logs-title">
-                <span>📋 Agent Activity Logs</span>
-                <span style="font-size: 10px; color: #666;">(Real-time agent thinking process)</span>
+                <span>Agent Activity Logs</span>
+                <span style="font-size: 10px; color: #666;">(Agent thinking process)</span>
             </div>
             <div id="logsList"></div>
         </div>
@@ -596,6 +612,12 @@ HTML_TEMPLATE = """
             
             <!-- Control Panel -->
             <div class="control-panel">
+                <!-- Scenario Description -->
+                <div class="panel-section" id="scenarioDescription" style="display: none;">
+                    <div class="section-title">Current Scenario</div>
+                    <div style="font-size: 11px; color: #ccc; line-height: 1.6; max-height: 200px; overflow-y: auto; white-space: pre-line;" id="scenarioDescText"></div>
+                </div>
+                
                 <!-- Controls -->
                 <div class="panel-section">
                     <div class="section-title">Controls</div>
@@ -603,9 +625,7 @@ HTML_TEMPLATE = """
                     <div class="control-group">
                         <label>Scenario</label>
                         <select id="scenario">
-                            <option value="simple">Simple (10x10)</option>
-                            <option value="medium">Medium (20x16)</option>
-                            <option value="large">Large (30x20)</option>
+                            <option value="scenario_1_simple">Scenario 1: Standard - Simple 1 Agent</option>
                         </select>
                     </div>
                     
@@ -614,9 +634,9 @@ HTML_TEMPLATE = """
                         <input type="range" id="speed" min="0.5" max="5" step="0.5" value="2">
                     </div>
                     
-                    <button id="startBtn" class="btn-start">▶ Start</button>
-                    <button id="pauseBtn" class="btn-pause" disabled>⏸ Pause</button>
-                    <button id="resetBtn" class="btn-reset">↻ Reset</button>
+                    <button id="startBtn" class="btn-start">Start</button>
+                    <button id="pauseBtn" class="btn-pause" disabled>Pause</button>
+                    <button id="resetBtn" class="btn-reset">Reset</button>
                 </div>
                 
                 <!-- Status -->
@@ -711,7 +731,7 @@ HTML_TEMPLATE = """
         
         // Visualization
         function updateVisualization(state) {
-            // Process logs
+            // Process logs - show in order (newest at bottom)
             if (state.logs && state.logs.length > 0) {
                 state.logs.forEach(log => {
                     addLog(state.tick, log.agent, log.message, log.type);
@@ -720,6 +740,12 @@ HTML_TEMPLATE = """
             
             // Draw canvas
             drawSimulation(state);
+            
+            // Update scenario info
+            if (state.scenario_name) {
+                document.getElementById('scenarioDescription').style.display = 'block';
+                document.getElementById('scenarioDescText').textContent = state.scenario_description || '';
+            }
             
             // Update UI
             tickEl.textContent = state.tick;
@@ -872,13 +898,14 @@ HTML_TEMPLATE = """
                 </div>
             `;
             
-            logs.unshift(logHtml);
-            if (logs.length > maxLogs) logs.pop();
+            // Add to end (newest at bottom)
+            logs.push(logHtml);
+            if (logs.length > maxLogs) logs.shift();  // Remove oldest from start
             
             logsListEl.innerHTML = logs.join('');
             
-            // Auto-scroll to top (newest logs)
-            logsListEl.parentElement.scrollTop = 0;
+            // Auto-scroll to bottom (newest logs)
+            logsListEl.parentElement.scrollTop = logsListEl.parentElement.scrollHeight;
         }
         
         // Add CSS animation for new logs
@@ -951,10 +978,7 @@ HTML_TEMPLATE = """
 """
 
 if __name__ == "__main__":
-    import uvicorn
-    print("\n" + "="*60)
-    print("MULTI-ROBOT CHARGING SIMULATION - VISUAL PATH PLANNING")
-    print("="*60)
+    print("MULTI-ROBOT CHARGING SIMULATION - VISUAL PATH PLANNING\n")
     print("\nStarting web server...")
     print("Server will be available at: http://localhost:8000")
     print("Press Ctrl+C to stop\n")

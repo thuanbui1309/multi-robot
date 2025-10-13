@@ -1,9 +1,6 @@
-"""Grid environment for the multi-agent simulation."""
-
 from enum import Enum
 from typing import List, Tuple, Set, Optional
 import numpy as np
-
 
 class CellType(Enum):
     """Types of cells in the grid."""

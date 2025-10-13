@@ -6,21 +6,8 @@ from colorama import init, Fore, Style
 
 # Initialize colorama for colored terminal output
 init()
-
-def print_banner():
-    """Print welcome banner."""
-    print(Fore.CYAN + Style.BRIGHT)
-    print("="*60)
-    print("MULTI-ROBOT CHARGING SIMULATION - VISUAL PATH PLANNING")
-    print("="*60)
-    print(Style.RESET_ALL)
-    print()
-
 def main():
     """Main entry point."""
-    # Print banner
-    print_banner()
-    
     # Default settings
     host = "0.0.0.0"
     port = 8000

@@ -1,10 +1,7 @@
-"""Metrics collection for simulation analysis."""
-
 from typing import Dict, List, Any
 from dataclasses import dataclass, field
 from collections import defaultdict
 import time
-
 
 @dataclass
 class VehicleMetrics:

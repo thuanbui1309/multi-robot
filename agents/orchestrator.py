@@ -1,5 +1,3 @@
-"""Orchestrator Agent - coordinates vehicle assignments to charging stations."""
-
 from typing import Dict, List, Optional, Set
 from mesa import Agent
 from core.assign import VehicleStationAssigner
@@ -8,7 +6,6 @@ from core.messages import (
     ChargingCompleteMessage
 )
 from core.grid import Grid, ChargingStation
-
 
 class OrchestratorAgent(Agent):
     """
@@ -163,13 +160,13 @@ class OrchestratorAgent(Agent):
         if not vehicles_needing_charge:
             return
         
-        # Log assignment check
-        vehicle_ids = [v['id'] for v in vehicles_needing_charge]
-        self.model.log_activity(
-            "Orchestrator",
-            f"🔍 Checking assignments for {len(vehicles_needing_charge)} vehicles: {', '.join(vehicle_ids)}",
-            "info"
-        )
+        # Log assignment check - only when we have vehicles needing charge
+        for vehicle in vehicles_needing_charge:
+            self.model.log_activity(
+                "Orchestrator",
+                f"Received charging request from {vehicle['id']} at {vehicle['position']} with {vehicle['battery_level']:.1f}% battery",
+                "info"
+            )
         
         # Get available stations
         available_stations = [
@@ -180,7 +177,7 @@ class OrchestratorAgent(Agent):
         if not available_stations:
             self.model.log_activity(
                 "Orchestrator",
-                "⚠️ No available stations",
+                "No available stations",
                 "warning"
             )
             return
@@ -204,9 +201,12 @@ class OrchestratorAgent(Agent):
             return
         
         # Log assignment
+        vehicle_state = self.vehicle_states.get(vehicle_id)
+        battery_info = f" (battery: {vehicle_state['battery_level']:.1f}%)" if vehicle_state else ""
+        
         self.model.log_activity(
             "Orchestrator",
-            f"Assigned {vehicle_id} to Station_{station_id} at {station['position']}",
+            f"Assigning {vehicle_id} to Station_{station_id} at {station['position']}{battery_info}",
             "action"
         )
         

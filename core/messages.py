@@ -1,9 +1,6 @@
-"""Message schemas for agent communication using Pydantic."""
-
 from enum import Enum
 from typing import Optional, Tuple, List
 from pydantic import BaseModel, Field
-
 
 class MessageType(str, Enum):
     """Types of messages exchanged between agents."""

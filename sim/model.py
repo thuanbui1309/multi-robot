@@ -1,5 +1,3 @@
-"""Mesa-based multi-agent simulation model."""
-
 from typing import List, Tuple, Dict, Any, Optional
 import random
 from mesa import Model
@@ -67,6 +65,9 @@ class ChargingSimulationModel(Model):
         grid: Grid,
         initial_vehicle_positions: List[Tuple[int, int]],
         initial_battery_levels: Optional[List[float]] = None,
+        scenario_name: str = "Unknown Scenario",
+        scenario_description: str = "",
+        step_delay: float = 0.3
     ):
         """
         Initialize simulation model.
@@ -75,8 +76,21 @@ class ChargingSimulationModel(Model):
             grid: Grid environment
             initial_vehicle_positions: Starting positions for vehicles
             initial_battery_levels: Starting battery levels (optional)
+            scenario_name: Name of the scenario being run
+            scenario_description: Description of the scenario
+            step_delay: Delay between steps for visualization
         """
         super().__init__()
+        
+        # Scenario information
+        self.scenario_name = scenario_name
+        self.scenario_description = scenario_description
+        self.step_delay = step_delay
+        
+        # Initial delay for observation (reduced to ~0.5 seconds)
+        self.initial_delay_steps = 2  # ~0.3 seconds at 0.15s per step
+        self.steps_with_initial_delay = 0
+        self.initial_logs_shown = False  # Track if initial logs were added
         
         # Environment
         self.grid = grid
@@ -93,7 +107,7 @@ class ChargingSimulationModel(Model):
         
         # Vehicle trails for visualization (last N positions per vehicle)
         self.vehicle_trails: Dict[str, List[Tuple[int, int]]] = {}
-        self.max_trail_length = 10
+        self.max_trail_length = 50  # Increased to show more of the path
         
         # Agent scheduling (ordered: vehicles first, then orchestrator)
         self.schedule = OrderedScheduler(self)
@@ -109,9 +123,12 @@ class ChargingSimulationModel(Model):
         # Add initial vehicles
         for i, pos in enumerate(initial_vehicle_positions):
             battery = initial_battery_levels[i] if initial_battery_levels else random.uniform(20, 80)
-            self.add_vehicle(pos, battery)
+            vehicle_id = self.add_vehicle(pos, battery)
         
         self.running = True
+        
+        # Don't add initial logs here - will be added in first step
+        # to avoid duplicate broadcasts
     
     def add_vehicle(
         self,
@@ -137,7 +154,7 @@ class ChargingSimulationModel(Model):
             position=position,
             battery_level=battery_level,
             battery_drain_rate=0.5,
-            charge_rate=2.0
+            charge_rate=5.0  # Faster charging: 5% per tick instead of 2%
         )
         
         self.vehicles[vehicle_id] = vehicle
@@ -157,7 +174,33 @@ class ChargingSimulationModel(Model):
     
     def step(self):
         """Execute one step of the simulation."""
-        # Clear logs from previous step
+        # Apply initial delay at the start (slower for first few steps)
+        # This allows user to see the initial messages without agents acting
+        if self.steps_with_initial_delay < self.initial_delay_steps:
+            self.steps_with_initial_delay += 1
+            
+            # Add initial logs only on the very first step
+            if self.steps_with_initial_delay == 1:
+                self.log_activity(
+                    "System",
+                    f"Starting Scenario: {self.scenario_name}",
+                    "action"
+                )
+                
+                for vehicle_id, vehicle in self.vehicles.items():
+                    self.log_activity(
+                        vehicle_id,
+                        f"Initialized at {vehicle.position} with {vehicle.battery_level:.1f}% battery",
+                        "info"
+                    )
+            else:
+                # Clear logs after first step to prevent duplicates
+                self.activity_logs.clear()
+            
+            # Don't execute agents during initial delay
+            return
+        
+        # Clear logs from previous step (after initial delay)
         self.activity_logs.clear()
         
         # Don't clear message queue here - let it accumulate
@@ -168,6 +211,20 @@ class ChargingSimulationModel(Model):
         
         # Clear processed messages after all agents have stepped
         self.message_queue.clear()
+        
+        # Check if all vehicles have completed (reached exit)
+        all_completed = all(
+            vehicle.status.value == 'completed' 
+            for vehicle in self.vehicles.values()
+        )
+        
+        if all_completed and len(self.vehicles) > 0:
+            self.running = False
+            self.log_activity(
+                "System",
+                "Scenario complete - all vehicles have exited",
+                "action"
+            )
         
         # Update metrics
         self.metrics.increment_tick()
@@ -234,6 +291,9 @@ class ChargingSimulationModel(Model):
         
         return {
             'tick': self.schedule.steps,
+            'scenario_name': self.scenario_name,
+            'scenario_description': self.scenario_description,
+            'step_delay': self.step_delay,
             'vehicles': vehicle_states,
             'stations': station_states,
             'orchestrator': orchestrator_state,

@@ -1,247 +1,182 @@
-"""Predefined simulation scenarios."""
-
-from typing import Tuple, List
+from typing import Tuple, List, Dict, Any, Optional
+from dataclasses import dataclass
 from core.grid import Grid
 
 
-def create_simple_scenario() -> Tuple[Grid, List[Tuple[int, int]], List[Tuple[int, int]]]:
-    """
-    Create a simple scenario with a small grid.
-    All stations and vehicles are fully accessible.
+@dataclass
+class ScenarioConfig:
+    """Configuration for a simulation scenario."""
+    name: str
+    description: str
+    grid: Grid
+    vehicle_positions: List[Tuple[int, int]]
+    vehicle_batteries: List[float]
+    expected_outcome: str
+    step_delay: float = 0.5
     
-    Returns:
-        Tuple of (grid, vehicle_positions, station_positions)
+    def get_metadata(self) -> Dict[str, Any]:
+        """Get scenario metadata for display."""
+        return {
+            'name': self.name,
+            'description': self.description,
+            'num_agents': len(self.vehicle_positions),
+            'num_stations': len(self.grid.charging_stations),
+            'vehicle_configs': [
+                {
+                    'id': f'vehicle_{i}',
+                    'position': pos,
+                    'battery': self.vehicle_batteries[i]
+                }
+                for i, pos in enumerate(self.vehicle_positions)
+            ],
+            'station_configs': [
+                {
+                    'id': station.station_id,
+                    'position': station.position,
+                    'capacity': station.capacity
+                }
+                for station in self.grid.charging_stations
+            ],
+            'exit_position': self.grid.exit_position,
+            'expected_outcome': self.expected_outcome,
+            'step_delay': self.step_delay
+        }
+
+
+def create_standard_simple_1_agent() -> ScenarioConfig:
     """
+        Scenario 1: Standard - Simple 1 Agent
+        
+        Description:
+        This is the baseline scenario demonstrating the complete charging cycle for a single
+        autonomous vehicle. It validates the fundamental multi-agent communication protocol
+        between a vehicle agent and the orchestrator agent.
+        
+        Initial Configuration:
+        - Grid: 15x12 simple environment with minimal obstacles
+        - Agents: 1 vehicle (vehicle_0)
+        - Stations: 2 charging stations with capacity 2 each
+        - Exit: Bottom-left corner (0, 11)
+        
+        Agent Configuration:
+        - vehicle_0: Position (12, 1), Battery 25% (low, needs charging)
+        
+        Station Configuration:
+        - Station_0: Position (5, 5), Capacity 2, Accessible
+        - Station_1: Position (10, 6), Capacity 2, Accessible
+        
+        Expected Flow:
+        1. vehicle_0 detects low battery (25% < 30% threshold)
+        2. vehicle_0 sends StatusUpdateMessage to orchestrator with position and battery level
+        3. Orchestrator receives request, evaluates available stations
+        4. Orchestrator assigns optimal station based on distance and battery level
+        5. Orchestrator sends AssignmentMessage to vehicle_0 with station location
+        6. vehicle_0 receives assignment, plans path using A* algorithm
+        7. vehicle_0 navigates to assigned station, avoiding obstacles
+        8. vehicle_0 arrives at station, begins charging (2% per tick)
+        9. vehicle_0 charges to 95%, releases station
+        10. vehicle_0 sends ChargingCompleteMessage to orchestrator
+        11. vehicle_0 plans path to exit
+        12. vehicle_0 navigates to exit and completes scenario
+        
+        Success Criteria:
+        - Complete agent-to-agent communication logged
+        - Vehicle successfully reaches assigned station
+        - Battery charges to ≥95%
+        - Vehicle successfully exits the area
+        - No collisions or stuck states
+        
+        Returns:
+            ScenarioConfig with complete scenario setup
+    """
+    # Create simple grid
     grid_str = """
-..........
-..........
-..###.....
-..#.#.....
-....#.....
-..........
-..........
-..........
-..........
-..........
-""".strip()
+        ...............
+        ...............
+        ...##..........
+        ...##..........
+        ...............
+        ...............
+        ...............
+        ...............
+        ...............
+        ...............
+        ...............
+        ...............
+    """.strip()
     
     grid = Grid.from_string(grid_str)
-    
-    # Add charging stations - all accessible
-    grid.add_charging_station(4, 4, capacity=2)  # Center accessible
-    grid.add_charging_station(8, 2, capacity=2)  # Right top
-    grid.add_charging_station(8, 7, capacity=2)  # Right bottom
-    
-    # Set exit position (bottom-left corner)
-    grid.set_exit(0, 9)
-    
-    # Initial vehicle positions - all can reach stations and exit
-    vehicle_positions = [
-        (1, 1),   # Top left
-        (1, 8),   # Bottom left
-        (8, 5),   # Right middle
-    ]
-    
-    return grid, vehicle_positions, []
-
-
-def create_medium_scenario() -> Tuple[Grid, List[Tuple[int, int]], List[Tuple[int, int]]]:
-    """
-    Create a medium-sized scenario with obstacles.
-    All stations and vehicles are fully accessible.
-    
-    Returns:
-        Tuple of (grid, vehicle_positions, station_positions)
-    """
-    grid_str = """
-....................
-....................
-....####............
-....#..#......####..
-........#.....#..#..
-....#..#..........#.
-....####......####..
-....................
-....................
-..####..............
-..#..#..............
-........#...........
-..#..#..............
-..####..............
-....................
-....................
-""".strip()
-    
-    grid = Grid.from_string(grid_str)
-    
-    # Add accessible charging stations
-    grid.add_charging_station(6, 4, capacity=2)   # Left station - accessible
-    grid.add_charging_station(16, 5, capacity=2)  # Right station - accessible
-    grid.add_charging_station(6, 11, capacity=2)  # Bottom left - accessible
-    
-    # Initial vehicle positions - all accessible
-    vehicle_positions = [
-        (1, 1),
-        (18, 1),
-        (1, 14),
-        (18, 14),
-        (10, 8),
-    ]
-    
-    return grid, vehicle_positions, []
-
-
-def create_large_scenario() -> Tuple[Grid, List[Tuple[int, int]], List[Tuple[int, int]]]:
-    """
-    Create a large complex scenario.
-    
-    Returns:
-        Tuple of (grid, vehicle_positions, station_positions)
-    """
-    width, height = 30, 20
-    grid = Grid(width, height)
-    
-    # Create walls around the edges
-    for x in range(width):
-        grid.set_obstacle(x, 0)
-        grid.set_obstacle(x, height - 1)
-    for y in range(height):
-        grid.set_obstacle(0, y)
-        grid.set_obstacle(width - 1, y)
-    
-    # Create some internal structures
-    # Vertical wall with gap
-    for y in range(5, 15):
-        if y != 10:  # Gap
-            grid.set_obstacle(10, y)
-    
-    # Horizontal wall with gap
-    for x in range(15, 25):
-        if x != 20:  # Gap
-            grid.set_obstacle(x, 10)
-    
-    # Add charging stations in strategic locations
-    grid.add_charging_station(5, 5, capacity=2)
-    grid.add_charging_station(5, 15, capacity=2)
-    grid.add_charging_station(25, 5, capacity=2)
-    grid.add_charging_station(25, 15, capacity=2)
-    grid.add_charging_station(15, 10, capacity=3)
-    
-    # Initial vehicle positions
-    vehicle_positions = [
-        (2, 2),
-        (2, 17),
-        (27, 2),
-        (27, 17),
-        (15, 2),
-        (15, 17),
-    ]
-    
-    return grid, vehicle_positions, []
-
-
-def create_stress_test_scenario() -> Tuple[Grid, List[Tuple[int, int]], List[Tuple[int, int]]]:
-    """
-    Create a stress test scenario with many vehicles and limited stations.
-    All stations and vehicles are fully accessible.
-    
-    Returns:
-        Tuple of (grid, vehicle_positions, station_positions)
-    """
-    width, height = 40, 30
-    grid = Grid(width, height)
-    
-    # Create a maze-like structure with guaranteed passages
-    for x in range(0, width, 6):
-        for y in range(2, height - 2):
-            if y % 5 != 0:  # Leave gaps every 5 rows
-                grid.set_obstacle(x, y)
-    
-    # Add charging stations in accessible open areas
-    grid.add_charging_station(3, 15, capacity=3)   # Left center
-    grid.add_charging_station(18, 10, capacity=2)  # Center
-    grid.add_charging_station(33, 20, capacity=2)  # Right lower
-    grid.add_charging_station(15, 25, capacity=2)  # Lower center
-    
-    # Many vehicle positions - all in accessible areas
-    vehicle_positions = [
-        (3, 3), (9, 3), (15, 3), (21, 3), (27, 3),
-        (3, 10), (9, 10), (15, 10), (21, 10), (27, 10),
-        (3, 20), (9, 20), (15, 20), (21, 20), (27, 20),
-    ]
-    
-    return grid, vehicle_positions, []
-
-
-def create_custom_scenario(
-    width: int,
-    height: int,
-    num_stations: int = 3,
-    num_vehicles: int = 5
-) -> Tuple[Grid, List[Tuple[int, int]], List[Tuple[int, int]]]:
-    """
-    Create a custom scenario.
-    
-    Args:
-        width: Grid width
-        height: Grid height
-        num_stations: Number of charging stations
-        num_vehicles: Number of vehicles
-    
-    Returns:
-        Tuple of (grid, vehicle_positions, station_positions)
-    """
-    import random
-    
-    grid = Grid(width, height)
-    
-    # Add some random obstacles (20% of cells)
-    num_obstacles = int(width * height * 0.2)
-    for _ in range(num_obstacles):
-        x = random.randint(0, width - 1)
-        y = random.randint(0, height - 1)
-        grid.set_obstacle(x, y)
     
     # Add charging stations
-    for _ in range(num_stations):
-        placed = False
-        attempts = 0
-        while not placed and attempts < 100:
-            x = random.randint(0, width - 1)
-            y = random.randint(0, height - 1)
-            if grid.is_walkable(x, y):
-                grid.add_charging_station(x, y, capacity=2)
-                placed = True
-            attempts += 1
+    grid.add_charging_station(5, 5, capacity=2)   # Center station
+    grid.add_charging_station(10, 6, capacity=2)  # Bottom-right station
     
-    # Generate vehicle positions
-    vehicle_positions = []
-    for _ in range(num_vehicles):
-        placed = False
-        attempts = 0
-        while not placed and attempts < 100:
-            x = random.randint(0, width - 1)
-            y = random.randint(0, height - 1)
-            if grid.is_walkable(x, y) and (x, y) not in vehicle_positions:
-                vehicle_positions.append((x, y))
-                placed = True
-            attempts += 1
+    # Set exit position
+    grid.set_exit(0, 11)
     
-    return grid, vehicle_positions, []
+    # Single vehicle with low battery that needs charging
+    vehicle_positions = [(12, 1)]
+    vehicle_batteries = [25.0] 
+    
+    return ScenarioConfig(
+        name="Standard - Simple 1 Agent",
+        description="""
+            Single agent charging scenario demonstrating complete communication protocol.
+
+            Initial State:
+            - 1 vehicle at (12, 1) with 25% battery (below 30% threshold)
+            - 2 available charging stations
+            - Exit at (0, 11)
+
+            Expected Behavior:
+            1. Agent detects low battery and requests charging
+            2. Orchestrator receives request and assigns optimal station
+            3. Agent navigates to station using A* pathfinding
+            4. Agent charges to 95%
+            5. Agent notifies orchestrator of completion
+            6. Agent exits the area
+        """,
+        grid=grid,
+        vehicle_positions=vehicle_positions,
+        vehicle_batteries=vehicle_batteries,
+        expected_outcome="Vehicle successfully charges and exits",
+        step_delay=0.5
+    )
 
 
 # Scenario registry
 SCENARIOS = {
-    'simple': create_simple_scenario,
-    'medium': create_medium_scenario,
-    'large': create_large_scenario,
-    'stress': create_stress_test_scenario,
+    'scenario_1_simple': create_standard_simple_1_agent,
 }
 
 
-def get_scenario(name: str = 'simple'):
-    """Get a scenario by name."""
+def get_scenario(name: str = 'scenario_1_simple') -> ScenarioConfig:
+    """
+    Get a scenario configuration by name.
+    
+    Args:
+        name: Scenario identifier
+        
+    Returns:
+        ScenarioConfig object
+    """
     if name in SCENARIOS:
         return SCENARIOS[name]()
     else:
-        return create_simple_scenario()
+        return create_standard_simple_1_agent()
+
+
+def list_scenarios() -> List[Dict[str, Any]]:
+    """
+    List all available scenarios with metadata.
+    
+    Returns:
+        List of scenario metadata dictionaries
+    """
+    scenarios = []
+    for scenario_id, scenario_func in SCENARIOS.items():
+        config = scenario_func()
+        metadata = config.get_metadata()
+        metadata['id'] = scenario_id
+        scenarios.append(metadata)
+    return scenarios

@@ -1,9 +1,6 @@
-"""A* pathfinding algorithm for navigation."""
-
 import heapq
 from typing import List, Tuple, Optional, Set, Callable
 from dataclasses import dataclass, field
-
 
 @dataclass(order=True)
 class Node:

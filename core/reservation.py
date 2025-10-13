@@ -1,8 +1,5 @@
-"""Reservation table for collision avoidance."""
-
 from typing import Dict, Set, Tuple, Optional, List
 from collections import defaultdict
-
 
 class ReservationTable:
     """

@@ -1,5 +1,3 @@
-"""Vehicle Agent - autonomous vehicle that navigates to charging stations."""
-
 from typing import Optional, List, Tuple, Dict, Any
 from mesa import Agent
 from core.messages import (
@@ -8,7 +6,6 @@ from core.messages import (
 )
 from core.planner import AStarPlanner
 from core.grid import Grid
-
 
 class VehicleAgent(Agent):
     """
@@ -67,6 +64,9 @@ class VehicleAgent(Agent):
         self.total_distance = 0.0
         self.num_replans = 0
         self.charging_start_time: Optional[int] = None
+        
+        # Charging request tracking
+        self.has_requested_charging = False
     
     @property
     def needs_charging(self) -> bool:
@@ -75,18 +75,22 @@ class VehicleAgent(Agent):
     
     def step(self):
         """Execute one step of the vehicle's behavior."""
-        # Main agent loop: sense -> plan -> act
+        # Main agent loop: sense -> plan -> act -> report
         
         # 1. SENSE - Update status based on environment
         self._sense()
         
-        # 2. PLAN - Decide next action
+        # 2. REQUEST CHARGING if needed (proactive agent behavior)
+        if self.needs_charging and not self.has_requested_charging and self.status == VehicleStatus.IDLE:
+            self._request_charging()
+        
+        # 3. PLAN - Decide next action
         self._plan()
         
-        # 3. ACT - Execute action
+        # 4. ACT - Execute action
         self._act()
         
-        # 4. REPORT - Send status to orchestrator
+        # 5. REPORT - Send status to orchestrator
         self._report_status()
     
     def _sense(self):
@@ -115,6 +119,20 @@ class VehicleAgent(Agent):
         if self.status == VehicleStatus.CHARGING:
             if self.battery_level >= 95.0:
                 self._complete_charging()
+    
+    def _request_charging(self):
+        """Request charging from orchestrator when battery is low."""
+        self.has_requested_charging = True
+        
+        # Log the charging request
+        self.model.log_activity(
+            self.unique_id,
+            f"Battery low ({self.battery_level:.1f}%), requesting charging assignment from Orchestrator",
+            "action"
+        )
+        
+        # Send status update which will trigger orchestrator assignment logic
+        # The orchestrator will detect low battery and assign a station
     
     def _plan(self):
         """Plan next action based on current state."""
@@ -159,7 +177,7 @@ class VehicleAgent(Agent):
             if old_battery > 20 and self.battery_level <= 20:
                 self.model.log_activity(
                     self.unique_id,
-                    f"⚠️ Battery critically low: {self.battery_level:.1f}%, waiting for assignment",
+                    f"Battery critically low: {self.battery_level:.1f}%, waiting for assignment",
                     "warning"
                 )
             return
@@ -186,19 +204,19 @@ class VehicleAgent(Agent):
                 self.status = VehicleStatus.MOVING
                 self.stuck_counter = 0
                 
-                # Log movement more frequently for real-time feel
-                remaining = len(self.path) - self.path_index
-                if self.path_index % 3 == 0 or remaining <= 3:  # Log every 3 steps or near end
-                    if self.status == VehicleStatus.EXITING:
+                # Log movement - only once when starting movement
+                if self.path_index == 1:  # First step of the path
+                    total_steps = len(self.path)
+                    if self.target_station is not None:
                         self.model.log_activity(
                             self.unique_id,
-                            f"Moving to exit: {remaining} steps, battery: {self.battery_level:.1f}%",
+                            f"Moving to Station_{self.target_station} (total {total_steps} steps, battery: {self.battery_level:.1f}%)",
                             "info"
                         )
                     else:
                         self.model.log_activity(
                             self.unique_id,
-                            f"Moving to Station_{self.target_station}: {remaining} steps, battery: {self.battery_level:.1f}%",
+                            f"Moving to exit (total {total_steps} steps, battery: {self.battery_level:.1f}%)",
                             "info"
                         )
                 
@@ -380,7 +398,7 @@ class VehicleAgent(Agent):
         # Log received assignment
         self.model.log_activity(
             self.unique_id,
-            f"Received assignment to Station_{assignment.station_id}, battery: {self.battery_level:.1f}%",
+            f"Received assignment to Station_{assignment.station_id} at {assignment.station_position}, planning path",
             "action"
         )
         

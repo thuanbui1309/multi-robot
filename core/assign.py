@@ -1,5 +1,3 @@
-"""Assignment algorithm for vehicle-to-station matching using Hungarian algorithm."""
-
 from typing import List, Tuple, Dict, Optional
 import numpy as np
 from scipy.optimize import linear_sum_assignment
