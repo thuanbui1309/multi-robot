@@ -2,7 +2,6 @@ from typing import Tuple, List, Dict, Any, Optional
 from dataclasses import dataclass
 from core.grid import Grid
 
-
 @dataclass
 class ScenarioConfig:
     """Configuration for a simulation scenario."""

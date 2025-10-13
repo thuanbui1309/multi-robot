@@ -1,6 +1,3 @@
-#!/bin/bash
-# Run web interface in conda environment
-
 # Activate conda environment
 eval "$(conda shell.bash hook)"
 conda activate multi_robot_system
@@ -20,6 +17,6 @@ echo "Server will start at http://localhost:8000"
 echo "Press Ctrl+C to stop"
 echo ""
 
-# Run the web interface (optionally pass custom port as first argument)
+# Run the web interface
 PORT="${1:-8000}"
 python main.py "$PORT"

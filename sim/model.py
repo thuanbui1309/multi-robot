@@ -8,7 +8,6 @@ from core.metrics import SimulationMetrics
 from agents.vehicle import VehicleAgent
 from agents.orchestrator import OrchestratorAgent
 
-
 class OrderedScheduler(BaseScheduler):
     """
     Custom scheduler that runs vehicles first, then orchestrator.

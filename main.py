@@ -1,5 +1,3 @@
-"""Main entry point for the multi-robot charging simulation."""
-
 import sys
 import uvicorn
 from colorama import init, Fore, Style
