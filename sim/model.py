@@ -91,6 +91,7 @@ class ChargingSimulationModel(Model):
         self.initial_delay_steps = 2  # ~0.3 seconds at 0.15s per step
         self.steps_with_initial_delay = 0
         self.initial_logs_shown = False  # Track if initial logs were added
+        self.completion_logged = False  # Track if completion message was logged
         
         # Environment
         self.grid = grid
@@ -219,12 +220,15 @@ class ChargingSimulationModel(Model):
         )
         
         if all_completed and len(self.vehicles) > 0:
-            self.running = False
-            self.log_activity(
-                "System",
-                "Scenario complete - all vehicles have exited",
-                "action"
-            )
+            if not self.completion_logged:
+                self.running = False
+                self.log_activity(
+                    "System",
+                    "Scenario complete - all vehicles have exited",
+                    "action"
+                )
+                self.completion_logged = True
+            return
         
         # Update metrics
         self.metrics.increment_tick()

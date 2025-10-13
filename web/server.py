@@ -253,6 +253,22 @@ HTML_TEMPLATE = """
             border-left-color: #ffd43b;
         }
         
+        .log-vehicle-0 {
+            border-left-color: #ffd43b;
+        }
+        
+        .log-vehicle-1 {
+            border-left-color: #51cf66;
+        }
+        
+        .log-vehicle-2 {
+            border-left-color: #ff6b9d;
+        }
+        
+        .log-system {
+            border-left-color: #9c27b0;
+        }
+        
         .log-timestamp {
             color: #666;
             margin-right: 6px;
@@ -268,6 +284,24 @@ HTML_TEMPLATE = """
         }
         
         .log-vehicle .log-agent {
+            color: #ffd43b;
+        }
+        
+        .log-vehicle-0 .log-agent {
+            color: #ffd43b;
+        }
+        
+        .log-vehicle-1 .log-agent {
+            color: #51cf66;
+        }
+        
+        .log-vehicle-2 .log-agent {
+            color: #ff6b9d;
+        }
+        
+        .log-system .log-agent {
+            color: #9c27b0;
+        }
             color: #ffd43b;
         }
         
@@ -293,6 +327,7 @@ HTML_TEMPLATE = """
             justify-content: center;
             padding: 20px;
             position: relative;
+            overflow: auto;  /* Enable scrolling for large maps */
         }
         
         #simulationCanvas {
@@ -580,33 +615,9 @@ HTML_TEMPLATE = """
             <div class="canvas-area">
                 <canvas id="simulationCanvas"></canvas>
                 
-                <!-- Legend -->
-                <div class="canvas-legend">
+                <!-- Legend (dynamically populated) -->
+                <div class="canvas-legend" id="canvasLegend">
                     <div class="legend-title">Legend</div>
-                    <div class="legend-item">
-                        <div class="legend-color" style="background: #51cf66;"></div>
-                        <span>Charging Station</span>
-                    </div>
-                    <div class="legend-item">
-                        <div class="legend-color" style="background: #ff6b6b;"></div>
-                        <span>Obstacle</span>
-                    </div>
-                    <div class="legend-item">
-                        <div class="legend-color" style="background: #ffd43b;"></div>
-                        <span>Vehicle</span>
-                    </div>
-                    <div class="legend-item">
-                        <div class="legend-color" style="background: #9c27b0; opacity: 0.5;"></div>
-                        <span>Trail (Past)</span>
-                    </div>
-                    <div class="legend-item">
-                        <div class="legend-color" style="background: #00bcd4; opacity: 0.7;"></div>
-                        <span>Path (Future)</span>
-                    </div>
-                    <div class="legend-item">
-                        <div class="legend-color" style="background: #2196F3; opacity: 0.3;"></div>
-                        <span>Exit Zone</span>
-                    </div>
                 </div>
             </div>
             
@@ -626,6 +637,7 @@ HTML_TEMPLATE = """
                         <label>Scenario</label>
                         <select id="scenario">
                             <option value="scenario_1_simple">Scenario 1: Standard - Simple 1 Agent</option>
+                            <option value="scenario_2_multiple">Scenario 2: Multiple Agents - Concurrent</option>
                         </select>
                     </div>
                     
@@ -741,6 +753,9 @@ HTML_TEMPLATE = """
             // Draw canvas
             drawSimulation(state);
             
+            // Update legend based on current scenario
+            updateLegend(state);
+            
             // Update scenario info
             if (state.scenario_name) {
                 document.getElementById('scenarioDescription').style.display = 'block';
@@ -835,10 +850,18 @@ HTML_TEMPLATE = """
             }
             
             // Draw trails and paths for each vehicle
-            state.vehicles.forEach(v => {
+            state.vehicles.forEach((v, idx) => {
+                // Vehicle-specific colors
+                const vehicleColors = [
+                    { main: '#ffd43b', trail: 'rgba(255, 212, 59, 0.5)', path: 'rgba(255, 212, 59, 0.7)' },  // Yellow
+                    { main: '#51cf66', trail: 'rgba(81, 207, 102, 0.5)', path: 'rgba(81, 207, 102, 0.7)' },  // Green
+                    { main: '#ff6b9d', trail: 'rgba(255, 107, 157, 0.5)', path: 'rgba(255, 107, 157, 0.7)' }  // Pink
+                ];
+                const colors = vehicleColors[idx % vehicleColors.length];
+                
                 // Draw trail (past positions)
                 if (v.trail && v.trail.length > 0) {
-                    ctx.fillStyle = 'rgba(156, 39, 176, 0.5)';
+                    ctx.fillStyle = colors.trail;
                     v.trail.forEach(([x, y]) => {
                         ctx.fillRect(x * cellSize + 5, y * cellSize + 5, cellSize - 10, cellSize - 10);
                     });
@@ -846,7 +869,7 @@ HTML_TEMPLATE = """
                 
                 // Draw future path
                 if (v.current_path && v.current_path.length > 0) {
-                    ctx.strokeStyle = 'rgba(0, 188, 212, 0.7)';
+                    ctx.strokeStyle = colors.path;
                     ctx.lineWidth = 3;
                     ctx.beginPath();
                     
@@ -863,7 +886,7 @@ HTML_TEMPLATE = """
                     ctx.stroke();
                     
                     // Draw waypoints
-                    ctx.fillStyle = 'rgba(0, 188, 212, 0.5)';
+                    ctx.fillStyle = colors.path.replace('0.7', '0.5');
                     for (let i = v.path_index; i < v.current_path.length; i++) {
                         const [px, py] = v.current_path[i];
                         ctx.fillRect(px * cellSize + 8, py * cellSize + 8, cellSize - 16, cellSize - 16);
@@ -872,7 +895,7 @@ HTML_TEMPLATE = """
                 
                 // Draw vehicle
                 const [vx, vy] = v.position;
-                ctx.fillStyle = '#ffd43b';
+                ctx.fillStyle = colors.main;
                 ctx.fillRect(vx * cellSize + 3, vy * cellSize + 3, cellSize - 6, cellSize - 6);
                 
                 // Vehicle label
@@ -884,15 +907,81 @@ HTML_TEMPLATE = """
             });
         }
         
+        function updateLegend(state) {
+            const legendEl = document.getElementById('canvasLegend');
+            
+            // Define vehicle colors
+            const vehicleColors = [
+                { color: '#ffd43b', name: 'Yellow' },
+                { color: '#51cf66', name: 'Green' },
+                { color: '#ff6b9d', name: 'Pink' },
+                { color: '#4fc3f7', name: 'Cyan' },
+                { color: '#9c27b0', name: 'Purple' },
+                { color: '#ff9800', name: 'Orange' }
+            ];
+            
+            // Build legend HTML
+            let legendHtml = '<div class="legend-title">Legend</div>';
+            
+            // Add obstacles
+            legendHtml += `
+                <div class="legend-item">
+                    <div class="legend-color" style="background: #ff6b6b;"></div>
+                    <span>Obstacle</span>
+                </div>
+            `;
+            
+            // Add charging stations
+            legendHtml += `
+                <div class="legend-item">
+                    <div class="legend-color" style="background: #51cf66;"></div>
+                    <span>Charging Station</span>
+                </div>
+            `;
+            
+            // Add vehicles dynamically based on actual number
+            state.vehicles.forEach((v, idx) => {
+                const colorInfo = vehicleColors[idx % vehicleColors.length];
+                const vehicleNum = v.id.split('_')[1] || idx;
+                legendHtml += `
+                    <div class="legend-item">
+                        <div class="legend-color" style="background: ${colorInfo.color};"></div>
+                        <span>Vehicle ${vehicleNum} (${colorInfo.name})</span>
+                    </div>
+                `;
+            });
+            
+            // Add exit zone if it exists
+            if (state.grid_exit) {
+                legendHtml += `
+                    <div class="legend-item">
+                        <div class="legend-color" style="background: #2196F3; opacity: 0.3;"></div>
+                        <span>Exit Zone</span>
+                    </div>
+                `;
+            }
+            
+            legendEl.innerHTML = legendHtml;
+        }
+        
         function addLog(tick, agent, message, type = 'info') {
-            const agentClass = agent === 'Orchestrator' ? 'log-orchestrator' : 'log-vehicle';
+            let agentClass = 'log-vehicle';
+            if (agent === 'Orchestrator') {
+                agentClass = 'log-orchestrator';
+            } else if (agent === 'System') {
+                agentClass = 'log-system';
+            } else if (agent.startsWith('vehicle_')) {
+                // Extract vehicle number and add specific class
+                const vehicleNum = agent.split('_')[1];
+                agentClass = `log-vehicle log-vehicle-${vehicleNum}`;
+            }
+            
             const typeClass = type === 'action' ? 'log-action' : 
                              type === 'warning' ? 'log-warning' : 
                              type === 'error' ? 'log-error' : '';
             
             const logHtml = `
                 <div class="log-entry ${agentClass}" style="animation: slideIn 0.3s ease-out;">
-                    <span class="log-timestamp">[T${tick}]</span>
                     <span class="log-agent">${agent}:</span>
                     <span class="${typeClass}">${message}</span>
                 </div>

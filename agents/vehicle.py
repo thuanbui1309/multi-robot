@@ -75,6 +75,10 @@ class VehicleAgent(Agent):
     
     def step(self):
         """Execute one step of the vehicle's behavior."""
+        # If already completed, don't do anything
+        if self.status == VehicleStatus.COMPLETED:
+            return
+        
         # Main agent loop: sense -> plan -> act -> report
         
         # 1. SENSE - Update status based on environment
@@ -201,7 +205,9 @@ class VehicleAgent(Agent):
                 self.total_distance += distance
                 self.battery_level = max(0.0, self.battery_level - self.battery_drain_rate)
                 
-                self.status = VehicleStatus.MOVING
+                # Only change status to MOVING if not already EXITING
+                if self.status != VehicleStatus.EXITING:
+                    self.status = VehicleStatus.MOVING
                 self.stuck_counter = 0
                 
                 # Log movement - only once when starting movement
@@ -233,8 +239,8 @@ class VehicleAgent(Agent):
                             self.status = VehicleStatus.COMPLETED
                             self.model.log_activity(
                                 self.unique_id,
-                                f"Reached exit at {self.position}, cycle complete!",
-                                "action"
+                                f"Successfully exited at {self.position}",
+                                "success"
                             )
                         else:
                             self.status = VehicleStatus.IDLE
@@ -272,7 +278,9 @@ class VehicleAgent(Agent):
         if path:
             self.path = path[1:]  # Exclude current position
             self.path_index = 0
-            self.status = VehicleStatus.MOVING
+            # Only change status to MOVING if not already EXITING
+            if self.status != VehicleStatus.EXITING:
+                self.status = VehicleStatus.MOVING
             
             # Log path planning
             self.model.log_activity(
