@@ -6,6 +6,8 @@ class MessageType(str, Enum):
     """Types of messages exchanged between agents."""
     STATUS_UPDATE = "status_update"
     ASSIGNMENT = "assignment"
+    ASSIGNMENT_REJECTION = "assignment_rejection"
+    ASSIGNMENT_COUNTER_PROPOSAL = "assignment_counter_proposal"
     PATH_REQUEST = "path_request"
     PATH_RESPONSE = "path_response"
     RESERVATION_REQUEST = "reservation_request"
@@ -93,3 +95,22 @@ class ChargingCompleteMessage(Message):
     msg_type: MessageType = MessageType.CHARGING_COMPLETE
     final_battery: float
     charging_duration: int
+
+
+class AssignmentRejectionMessage(Message):
+    """Vehicle rejects a station assignment with reason."""
+    msg_type: MessageType = MessageType.ASSIGNMENT_REJECTION
+    rejected_station_id: int
+    reason: str  # e.g., "too_far", "low_battery", "prefer_alternative"
+    current_position: Tuple[int, int]
+    battery_level: float
+
+
+class AssignmentCounterProposalMessage(Message):
+    """Vehicle proposes alternative station assignment."""
+    msg_type: MessageType = MessageType.ASSIGNMENT_COUNTER_PROPOSAL
+    rejected_station_id: int
+    proposed_station_id: int
+    reason: str
+    current_position: Tuple[int, int]
+    battery_level: float

@@ -638,6 +638,9 @@ HTML_TEMPLATE = """
                         <select id="scenario">
                             <option value="scenario_1_simple">Scenario 1: Standard - Simple 1 Agent</option>
                             <option value="scenario_2_multiple">Scenario 2: Multiple Agents - Concurrent</option>
+                            <option value="scenario_3_conflict">Scenario 3: Path Conflict - Head-On Avoidance</option>
+                            <option value="scenario_4_contention">Scenario 4: Station Contention - Resource Allocation</option>
+                            <option value="scenario_5_negotiation">Scenario 5: Assignment Negotiation</option>
                         </select>
                     </div>
                     
@@ -1023,7 +1026,7 @@ HTML_TEMPLATE = """
             if (isPaused) {
                 send({ type: 'resume' });
                 isPaused = false;
-                pauseBtn.textContent = '⏸ Pause';
+                pauseBtn.textContent = 'Pause';
             } else {
                 send({ 
                     type: 'start',
@@ -1038,10 +1041,10 @@ HTML_TEMPLATE = """
         pauseBtn.addEventListener('click', () => {
             if (isPaused) {
                 send({ type: 'resume' });
-                pauseBtn.textContent = '⏸ Pause';
+                pauseBtn.textContent = 'Pause';
             } else {
                 send({ type: 'pause' });
-                pauseBtn.textContent = '▶ Resume';
+                pauseBtn.textContent = 'Resume';
             }
             isPaused = !isPaused;
         });
@@ -1054,7 +1057,7 @@ HTML_TEMPLATE = """
             startBtn.disabled = false;
             pauseBtn.disabled = true;
             isPaused = false;
-            pauseBtn.textContent = '⏸ Pause';
+            pauseBtn.textContent = 'Pause';
             logs.length = 0;
             logsListEl.innerHTML = '';
         });

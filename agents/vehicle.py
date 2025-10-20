@@ -2,7 +2,8 @@ from typing import Optional, List, Tuple, Dict, Any
 from mesa import Agent
 from core.messages import (
     VehicleStatus, StatusUpdateMessage, AssignmentMessage,
-    ChargingCompleteMessage
+    ChargingCompleteMessage, AssignmentRejectionMessage,
+    AssignmentCounterProposalMessage
 )
 from core.planner import AStarPlanner
 from core.grid import Grid
@@ -23,7 +24,8 @@ class VehicleAgent(Agent):
         position: Tuple[int, int],
         battery_level: float = 100.0,
         battery_drain_rate: float = 0.5,
-        charge_rate: float = 2.0
+        charge_rate: float = 2.0,
+        enable_negotiation: bool = False
     ):
         """
         Initialize vehicle agent.
@@ -35,6 +37,7 @@ class VehicleAgent(Agent):
             battery_level: Initial battery level (0-100)
             battery_drain_rate: Battery drain per movement step
             charge_rate: Charging rate per tick at station
+            enable_negotiation: Whether vehicle can negotiate assignments
         """
         super().__init__(model)
         self.unique_id = unique_id
@@ -60,6 +63,19 @@ class VehicleAgent(Agent):
         self.stuck_counter = 0
         self.max_stuck_time = 5
         
+        # Collision avoidance - Priority based on vehicle ID
+        self.priority = self._extract_priority(unique_id)
+        self.waiting_for_vehicle: Optional[str] = None
+        self.wait_counter = 0
+        self.max_wait_time = 10  # Maximum ticks to wait before replanning
+        
+        # Negotiation capabilities
+        self.enable_negotiation = enable_negotiation
+        self.max_acceptable_distance = 10  # Max distance willing to travel (reduced from 15)
+        self.critical_battery_threshold = 25.0  # Below this, very selective
+        self.distance_preference_factor = 0.2  # Reject if alternative is 20% closer (more aggressive)
+        self.battery_safety_margin = 2.0  # Require 2x battery for distance (more conservative)
+        
         # Statistics
         self.total_distance = 0.0
         self.num_replans = 0
@@ -68,10 +84,107 @@ class VehicleAgent(Agent):
         # Charging request tracking
         self.has_requested_charging = False
     
+    def _extract_priority(self, vehicle_id: str) -> int:
+        """
+        Extract priority from vehicle ID.
+        Lower ID number = Higher priority (goes first in conflicts).
+        
+        Args:
+            vehicle_id: Vehicle identifier (e.g., "vehicle_0", "vehicle_1")
+        
+        Returns:
+            Integer priority (lower number = higher priority)
+        """
+        try:
+            # Extract number from "vehicle_N" format
+            return int(vehicle_id.split('_')[1])
+        except (IndexError, ValueError):
+            # Fallback: use hash if format is unexpected
+            return hash(vehicle_id) % 1000
+    
     @property
     def needs_charging(self) -> bool:
         """Check if vehicle needs charging."""
         return self.battery_level < self.battery_threshold
+    
+    def _detect_collision_threat(self, next_pos: Tuple[int, int]) -> Optional[str]:
+        """
+        Detect if moving to next_pos would cause collision with another vehicle.
+        Implements priority-based detection from the algorithm.
+        
+        Args:
+            next_pos: Position we want to move to
+            
+        Returns:
+            ID of threatening vehicle if collision detected, None otherwise
+        """
+        # Check all other vehicles
+        for vehicle_id, vehicle in self.model.vehicles.items():
+            if vehicle_id == self.unique_id:
+                continue
+            
+            # Skip completed vehicles
+            if vehicle.status == VehicleStatus.COMPLETED:
+                continue
+                
+            # Check if other vehicle is at our target position
+            if vehicle.position == next_pos:
+                return vehicle_id
+            
+            # Check if other vehicle is heading to same position (head-on)
+            if (hasattr(vehicle, 'path') and vehicle.path and 
+                vehicle.path_index < len(vehicle.path)):
+                other_next = vehicle.path[vehicle.path_index]
+                
+                # Head-on collision: we go to their position, they come to ours
+                if other_next == self.position and next_pos == vehicle.position:
+                    return vehicle_id
+                
+                # Same target next step
+                if other_next == next_pos:
+                    return vehicle_id
+        
+        return None
+    
+    def _should_yield(self, other_vehicle_id: str) -> bool:
+        """
+        Determine if this vehicle should yield to another based on priority.
+        Lower ID = Higher priority (proceeds first).
+        Higher ID = Lower priority (yields).
+        
+        Args:
+            other_vehicle_id: ID of the other vehicle
+            
+        Returns:
+            True if this vehicle should yield (wait), False if it has priority
+        """
+        other_priority = self._extract_priority(other_vehicle_id)
+        
+        # Lower priority value = higher priority
+        # If our priority is higher (lower number), we don't yield
+        # If our priority is lower (higher number), we yield
+        should_yield = self.priority > other_priority
+        
+        if should_yield and self.waiting_for_vehicle != other_vehicle_id:
+            # Log yielding behavior with detailed priority info
+            self.model.log_activity(
+                self.unique_id,
+                f"CONFLICT DETECTED with {other_vehicle_id} - Yielding (my priority={self.priority}, their priority={other_priority})",
+                "warning"
+            )
+            self.waiting_for_vehicle = other_vehicle_id
+            self.wait_counter = 0
+        elif not should_yield and other_vehicle_id:
+            # Log when we have priority
+            if not hasattr(self, '_logged_priority_for') or self._logged_priority_for != other_vehicle_id:
+                self.model.log_activity(
+                    self.unique_id,
+                    f"CONFLICT DETECTED with {other_vehicle_id} - Proceeding (my priority={self.priority} > their priority={other_priority})",
+                    "info"
+                )
+                self._logged_priority_for = other_vehicle_id
+        
+        return should_yield
     
     def step(self):
         """Execute one step of the vehicle's behavior."""
@@ -189,6 +302,56 @@ class VehicleAgent(Agent):
         # Try to move along path
         if self.path and self.path_index < len(self.path):
             next_pos = self.path[self.path_index]
+            
+            # COLLISION DETECTION: Check for potential collision with other vehicles
+            threatening_vehicle = self._detect_collision_threat(next_pos)
+            
+            if threatening_vehicle:
+                # Collision threat detected - check priority
+                if self._should_yield(threatening_vehicle):
+                    # We have lower priority - WAIT
+                    self.wait_counter += 1
+                    
+                    # Log waiting (only once or when exceeding max wait)
+                    if self.wait_counter == 1:
+                        self.model.log_activity(
+                            self.unique_id,
+                            f"WAITING for {threatening_vehicle} to pass (conflict at {next_pos}, wait_count=1)",
+                            "warning"
+                        )
+                    elif self.wait_counter % 3 == 0:  # Log every 3 ticks while waiting
+                        self.model.log_activity(
+                            self.unique_id,
+                            f"⏳ Still waiting for {threatening_vehicle} (wait_count={self.wait_counter})",
+                            "warning"
+                        )
+                    
+                    # If waited too long, try replanning
+                    if self.wait_counter >= self.max_wait_time:
+                        self.model.log_activity(
+                            self.unique_id,
+                            f"Waited {self.wait_counter} ticks - attempting replan",
+                            "warning"
+                        )
+                        self._replan()
+                        self.waiting_for_vehicle = None
+                        self.wait_counter = 0
+                    
+                    return  # Don't move this tick
+                # else: We have higher priority, proceed with movement
+            else:
+                # No collision threat - clear waiting state
+                if self.waiting_for_vehicle:
+                    self.model.log_activity(
+                        self.unique_id,
+                        f"{self.waiting_for_vehicle} has passed - Path clear, resuming movement",
+                        "action"
+                    )
+                    self.waiting_for_vehicle = None
+                    self.wait_counter = 0
+                    # Clear the priority log tracker
+                    if hasattr(self, '_logged_priority_for'):
+                        delattr(self, '_logged_priority_for')
             
             # Try to reserve next position
             reservation_table = self.model.reservation_table
@@ -330,8 +493,16 @@ class VehicleAgent(Agent):
         grid: Grid = self.model.grid
         station = grid.get_station_at(self.position)
         
+        station_id = station.station_id if station else None
+        
         if station:
             station.release(self.unique_id)
+            # Log station release
+            self.model.log_activity(
+                self.unique_id,
+                f"Finished charging at Station_{station_id} (battery: {self.battery_level:.1f}%) - Station now available",
+                "action"
+            )
         
         # Check if exit is configured
         if grid.exit_position:
@@ -345,7 +516,7 @@ class VehicleAgent(Agent):
             # Log exiting
             self.model.log_activity(
                 self.unique_id,
-                f"Charging complete (battery: {self.battery_level:.1f}%), heading to exit at {grid.exit_position}",
+                f"Heading to exit at {grid.exit_position}",
                 "action"
             )
         else:
@@ -357,7 +528,7 @@ class VehicleAgent(Agent):
             # Log completion
             self.model.log_activity(
                 self.unique_id,
-                f"Charging complete (battery: {self.battery_level:.1f}%), returning to idle",
+                f"Returning to idle state",
                 "action"
             )
         
@@ -399,6 +570,29 @@ class VehicleAgent(Agent):
     
     def receive_assignment(self, assignment: AssignmentMessage):
         """Receive station assignment from orchestrator."""
+        # Log that assignment was received
+        self.model.log_activity(
+            self.unique_id,
+            f"Received assignment to Station_{assignment.station_id} at {assignment.station_position} (negotiation_enabled={self.enable_negotiation})",
+            "info"
+        )
+        
+        # If negotiation is disabled, accept immediately
+        if not self.enable_negotiation:
+            self._accept_assignment(assignment)
+            return
+        
+        # Evaluate assignment with negotiation logic
+        should_accept, reason = self._evaluate_assignment(assignment)
+        
+        if should_accept:
+            self._accept_assignment(assignment)
+        else:
+            # Reject and try to negotiate
+            self._negotiate_assignment(assignment, reason)
+    
+    def _accept_assignment(self, assignment: AssignmentMessage):
+        """Accept an assignment and proceed."""
         self.target_station = assignment.station_id
         self.target_position = assignment.station_position
         self.status = VehicleStatus.PLANNING
@@ -406,7 +600,7 @@ class VehicleAgent(Agent):
         # Log received assignment
         self.model.log_activity(
             self.unique_id,
-            f"Received assignment to Station_{assignment.station_id} at {assignment.station_position}, planning path",
+            f"Accepted assignment to Station_{assignment.station_id} at {assignment.station_position}, planning path",
             "action"
         )
         
@@ -416,6 +610,143 @@ class VehicleAgent(Agent):
         # Record metric
         if hasattr(self.model, 'metrics'):
             self.model.metrics.record_assignment(self.unique_id)
+    
+    def _evaluate_assignment(self, assignment: AssignmentMessage) -> Tuple[bool, str]:
+        """
+        Evaluate if assignment is acceptable.
+        
+        Returns:
+            (should_accept, reason_if_not)
+        """
+        grid: Grid = self.model.grid
+        assigned_station_pos = assignment.station_position
+        
+        # Calculate distance to assigned station
+        distance_to_assigned = abs(self.position[0] - assigned_station_pos[0]) + \
+                               abs(self.position[1] - assigned_station_pos[1])
+        
+        # Log evaluation
+        self.model.log_activity(
+            self.unique_id,
+            f"Evaluating assignment to Station_{assignment.station_id} (distance={distance_to_assigned}, battery={self.battery_level:.1f}%)",
+            "info"
+        )
+        
+        # Check if distance exceeds max acceptable distance
+        if distance_to_assigned > self.max_acceptable_distance:
+            return False, f"distance_too_far (distance={distance_to_assigned} > max_acceptable={self.max_acceptable_distance}, battery={self.battery_level:.1f}%)"
+        
+        # Check if distance is too far for current battery (use safety margin)
+        estimated_battery_cost = distance_to_assigned * self.battery_drain_rate * self.battery_safety_margin
+        if self.battery_level - estimated_battery_cost < 10.0:  # Need at least 10% buffer
+            return False, f"insufficient_battery (distance={distance_to_assigned}, cost={estimated_battery_cost:.1f}%, current={self.battery_level:.1f}%, margin={self.battery_safety_margin}x)"
+        
+        # For critical battery, be VERY selective - always prefer the absolute closest
+        if self.battery_level < self.critical_battery_threshold:
+            # Find ALL stations and their distances (not just available ones)
+            min_distance = distance_to_assigned
+            closest_station = None
+            
+            for station in grid.charging_stations:
+                if station.station_id == assignment.station_id:
+                    continue
+                dist = abs(self.position[0] - station.position[0]) + \
+                       abs(self.position[1] - station.position[1])
+                if dist < min_distance:
+                    min_distance = dist
+                    closest_station = station
+            
+            # If there's a closer station (even if currently occupied), reject
+            if closest_station:
+                distance_diff = distance_to_assigned - min_distance
+                return False, f"battery_critical_prefer_closer (assigned_dist={distance_to_assigned}, closer_Station_{closest_station.station_id}_dist={min_distance:.1f}, diff={distance_diff:.1f}, will_wait_if_needed)"
+        
+        # For non-critical battery, still check for significantly better alternatives
+        # Only consider available stations
+        for station in grid.charging_stations:
+            if station.station_id == assignment.station_id:
+                continue
+            if station.is_available():  # Only consider available stations
+                dist = abs(self.position[0] - station.position[0]) + \
+                       abs(self.position[1] - station.position[1])
+                
+                # If alternative is significantly closer (> 30% closer)
+                if dist < distance_to_assigned * (1 - self.distance_preference_factor):
+                    distance_diff = distance_to_assigned - dist
+                    return False, f"prefer_alternative_closer (assigned_dist={distance_to_assigned}, alternative_Station_{station.station_id}_dist={dist:.1f}, diff={distance_diff:.1f})"
+        
+        # Assignment is acceptable
+        self.model.log_activity(
+            self.unique_id,
+            f"Assignment acceptable, will proceed to Station_{assignment.station_id}",
+            "info"
+        )
+        return True, ""
+    
+    def _negotiate_assignment(self, assignment: AssignmentMessage, reason: str):
+        """
+        Negotiate with orchestrator about assignment.
+        """
+        grid: Grid = self.model.grid
+        
+        # Log rejection
+        self.model.log_activity(
+            self.unique_id,
+            f"Rejecting assignment to Station_{assignment.station_id} - Reason: {reason}",
+            "warning"
+        )
+        
+        # Find alternative station proposal
+        best_alternative = None
+        best_distance = float('inf')
+        
+        for station in grid.charging_stations:
+            if station.station_id == assignment.station_id:
+                continue
+            if station.is_available():
+                dist = abs(self.position[0] - station.position[0]) + \
+                       abs(self.position[1] - station.position[1])
+                if dist < best_distance:
+                    best_distance = dist
+                    best_alternative = station
+        
+        if best_alternative:
+            # Send counter-proposal
+            self.model.log_activity(
+                self.unique_id,
+                f"Counter-proposal: Prefer Station_{best_alternative.station_id} at {best_alternative.position} (distance={best_distance:.1f} vs {abs(self.position[0] - assignment.station_position[0]) + abs(self.position[1] - assignment.station_position[1]):.1f})",
+                "info"
+            )
+            
+            msg = AssignmentCounterProposalMessage(
+                sender_id=self.unique_id,
+                receiver_id=str(self.model.orchestrator.unique_id),
+                timestamp=self.model.schedule.steps,
+                rejected_station_id=assignment.station_id,
+                proposed_station_id=best_alternative.station_id,
+                reason=reason,
+                current_position=self.position,
+                battery_level=self.battery_level
+            )
+            self.model.message_queue.append(msg)
+        else:
+            # No alternative, send rejection only
+            self.model.log_activity(
+                self.unique_id,
+                f"No suitable alternative found, sending rejection",
+                "warning"
+            )
+            
+            msg = AssignmentRejectionMessage(
+                sender_id=self.unique_id,
+                receiver_id=str(self.model.orchestrator.unique_id),
+                timestamp=self.model.schedule.steps,
+                rejected_station_id=assignment.station_id,
+                reason=reason,
+                current_position=self.position,
+                battery_level=self.battery_level
+            )
+            self.model.message_queue.append(msg)
     
     def get_state(self) -> Dict[str, Any]:
         """Get current state as dictionary."""

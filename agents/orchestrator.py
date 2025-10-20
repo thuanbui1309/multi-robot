@@ -3,7 +3,8 @@ from mesa import Agent
 from core.assign import VehicleStationAssigner
 from core.messages import (
     VehicleStatus, AssignmentMessage, StatusUpdateMessage,
-    ChargingCompleteMessage
+    ChargingCompleteMessage, AssignmentRejectionMessage,
+    AssignmentCounterProposalMessage
 )
 from core.grid import Grid, ChargingStation
 
@@ -95,10 +96,14 @@ class OrchestratorAgent(Agent):
                         f"{msg.sender_id} completed charging at Station_{station_id}",
                         "action"
                     )
+            
+            elif isinstance(msg, AssignmentRejectionMessage):
+                # Vehicle rejected assignment
+                self._handle_assignment_rejection(msg)
                     
-            elif isinstance(msg, PathRequestMessage):
-                # Handle path request (for future use)
-                pass
+            elif isinstance(msg, AssignmentCounterProposalMessage):
+                # Vehicle proposed alternative assignment
+                self._handle_counter_proposal(msg)
     
     def _handle_status_update(self, msg: StatusUpdateMessage):
         """Handle vehicle status update."""
@@ -161,7 +166,22 @@ class OrchestratorAgent(Agent):
             return
         
         # Log assignment check - only when we have vehicles needing charge
-        for vehicle in vehicles_needing_charge:
+        if len(vehicles_needing_charge) > 1:
+            # Multiple vehicles competing - log all candidates
+            self.model.log_activity(
+                "Orchestrator",
+                f"Multiple vehicles requesting charging ({len(vehicles_needing_charge)} vehicles)",
+                "info"
+            )
+            for vehicle in vehicles_needing_charge:
+                self.model.log_activity(
+                    "Orchestrator",
+                    f"  Candidate: {vehicle['id']} at {vehicle['position']} with {vehicle['battery_level']:.1f}% battery",
+                    "info"
+                )
+        else:
+            # Single vehicle
+            vehicle = vehicles_needing_charge[0]
             self.model.log_activity(
                 "Orchestrator",
                 f"Received charging request from {vehicle['id']} at {vehicle['position']} with {vehicle['battery_level']:.1f}% battery",
@@ -200,15 +220,30 @@ class OrchestratorAgent(Agent):
         if not station:
             return
         
-        # Log assignment
+        # Get vehicle state and calculate assignment factors
         vehicle_state = self.vehicle_states.get(vehicle_id)
-        battery_info = f" (battery: {vehicle_state['battery_level']:.1f}%)" if vehicle_state else ""
-        
-        self.model.log_activity(
-            "Orchestrator",
-            f"Assigning {vehicle_id} to Station_{station_id} at {station['position']}{battery_info}",
-            "action"
-        )
+        if vehicle_state:
+            # Calculate distance to station
+            distance = self.assigner.calculate_distance(
+                vehicle_state['position'],
+                station['position']
+            )
+            
+            battery_level = vehicle_state['battery_level']
+            
+            # Log assignment with reasoning
+            self.model.log_activity(
+                "Orchestrator",
+                f"Assigning {vehicle_id} to Station_{station_id} at {station['position']} - Reason: distance={distance:.1f}, battery={battery_level:.1f}%",
+                "action"
+            )
+        else:
+            # Fallback if no vehicle state
+            self.model.log_activity(
+                "Orchestrator",
+                f"Assigning {vehicle_id} to Station_{station_id} at {station['position']}",
+                "action"
+            )
         
         # Create assignment message
         msg = AssignmentMessage(
@@ -272,6 +307,123 @@ class OrchestratorAgent(Agent):
         
         if best_station:
             self._send_assignment(vehicle_id, best_station['id'])
+    
+    def _handle_assignment_rejection(self, msg: AssignmentRejectionMessage):
+        """Handle vehicle rejecting an assignment."""
+        self.model.log_activity(
+            "Orchestrator",
+            f"Received rejection from {msg.sender_id} for Station_{msg.rejected_station_id}: {msg.reason}",
+            "warning"
+        )
+        
+        # Remove the rejected assignment
+        if msg.sender_id in self.active_assignments:
+            del self.active_assignments[msg.sender_id]
+        if msg.rejected_station_id in self.station_assignments:
+            del self.station_assignments[msg.rejected_station_id]
+        
+        # Try to find a better assignment for this vehicle
+        self.model.log_activity(
+            "Orchestrator",
+            f"Finding alternative assignment for {msg.sender_id}",
+            "info"
+        )
+        
+        # Get vehicle state
+        vehicle_state = {
+            'id': msg.sender_id,
+            'position': msg.current_position,
+            'battery_level': msg.battery_level,
+            'status': VehicleStatus.IDLE
+        }
+        
+        # Find available stations (excluding the rejected one)
+        available_stations = [
+            sid for sid, sstate in self.station_states.items()
+            if sid != msg.rejected_station_id and 
+               sid not in self.station_assignments and 
+               sstate['occupied'] < sstate['capacity']
+        ]
+        
+        if available_stations:
+            # Assign to next best station
+            assignments = self.assigner.assign(
+                [vehicle_state],
+                [self.station_states[sid] for sid in available_stations]
+            )
+            
+            if msg.sender_id in assignments and assignments[msg.sender_id] is not None:
+                station_id = assignments[msg.sender_id]
+                self._send_assignment(msg.sender_id, station_id)
+                self.station_assignments[station_id] = msg.sender_id
+            else:
+                self.model.log_activity(
+                    "Orchestrator",
+                    f"No suitable alternative found for {msg.sender_id}",
+                    "warning"
+                )
+        else:
+            self.model.log_activity(
+                "Orchestrator",
+                f"No available stations for {msg.sender_id} after rejection",
+                "warning"
+            )
+    
+    def _handle_counter_proposal(self, msg: AssignmentCounterProposalMessage):
+        """Handle vehicle proposing alternative station."""
+        self.model.log_activity(
+            "Orchestrator",
+            f"Received counter-proposal from {msg.sender_id}: reject Station_{msg.rejected_station_id}, prefer Station_{msg.proposed_station_id} - Reason: {msg.reason}",
+            "info"
+        )
+        
+        # Check if proposed station is available
+        proposed_station = self.station_states.get(msg.proposed_station_id)
+        
+        if not proposed_station:
+            self.model.log_activity(
+                "Orchestrator",
+                f"Proposed Station_{msg.proposed_station_id} does not exist",
+                "warning"
+            )
+            self._handle_assignment_rejection(msg)  # Fall back to rejection handling
+            return
+        
+        # Check if proposed station is available
+        if msg.proposed_station_id in self.station_assignments:
+            self.model.log_activity(
+                "Orchestrator",
+                f"Proposed Station_{msg.proposed_station_id} already assigned to {self.station_assignments[msg.proposed_station_id]}",
+                "warning"
+            )
+            self._handle_assignment_rejection(msg)  # Fall back to rejection handling
+            return
+        
+        if proposed_station['occupied'] >= proposed_station['capacity']:
+            self.model.log_activity(
+                "Orchestrator",
+                f"Proposed Station_{msg.proposed_station_id} is at full capacity",
+                "warning"
+            )
+            self._handle_assignment_rejection(msg)  # Fall back to rejection handling
+            return
+        
+        # Counter-proposal is valid - accept it!
+        self.model.log_activity(
+            "Orchestrator",
+            f"Accepting counter-proposal: Reassigning {msg.sender_id} from Station_{msg.rejected_station_id} to Station_{msg.proposed_station_id}",
+            "action"
+        )
+        
+        # Remove old assignment
+        if msg.sender_id in self.active_assignments:
+            del self.active_assignments[msg.sender_id]
+        if msg.rejected_station_id in self.station_assignments:
+            del self.station_assignments[msg.rejected_station_id]
+        
+        # Create new assignment
+        self._send_assignment(msg.sender_id, msg.proposed_station_id)
+        self.station_assignments[msg.proposed_station_id] = msg.sender_id
     
     def get_state(self) -> Dict:
         """Get orchestrator state."""

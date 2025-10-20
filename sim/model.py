@@ -148,13 +148,17 @@ class ChargingSimulationModel(Model):
         vehicle_id = f"vehicle_{self._vehicle_counter}"
         self._vehicle_counter += 1
         
+        # Enable negotiation for Scenario 5
+        enable_negotiation = "negotiation" in self.scenario_name.lower()
+        
         vehicle = VehicleAgent(
             unique_id=vehicle_id,
             model=self,
             position=position,
             battery_level=battery_level,
             battery_drain_rate=0.5,
-            charge_rate=5.0  # Faster charging: 5% per tick instead of 2%
+            charge_rate=5.0,  # Faster charging: 5% per tick instead of 2%
+            enable_negotiation=enable_negotiation
         )
         
         self.vehicles[vehicle_id] = vehicle
