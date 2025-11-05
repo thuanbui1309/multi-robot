@@ -74,13 +74,20 @@ async def handle_message(data: dict, websocket: WebSocket):
         
         # Create new simulation from scenario config
         scenario_config = get_scenario(scenario)
+        
+        # Use negotiating agents by default for all scenarios
+        from agents.negotiating_orchestrator import NegotiatingOrchestrator
+        from agents.negotiating_vehicle import NegotiatingVehicle
+        
         simulation_model = ChargingSimulationModel(
             grid=scenario_config.grid,
             initial_vehicle_positions=scenario_config.vehicle_positions,
             initial_battery_levels=scenario_config.vehicle_batteries,
             scenario_name=scenario_config.name,
             scenario_description=scenario_config.description,
-            step_delay=scenario_config.step_delay
+            step_delay=scenario_config.step_delay,
+            orchestrator_class=NegotiatingOrchestrator,
+            vehicle_class=NegotiatingVehicle
         )
         
         simulation_running = True
@@ -101,14 +108,22 @@ async def handle_message(data: dict, websocket: WebSocket):
     elif msg_type == "reset":
         scenario = data.get("scenario", "scenario_1_simple")
         scenario_config = get_scenario(scenario)
+        
+        # Use negotiating agents by default for all scenarios
+        from agents.negotiating_orchestrator import NegotiatingOrchestrator
+        from agents.negotiating_vehicle import NegotiatingVehicle
+        
         simulation_model = ChargingSimulationModel(
             grid=scenario_config.grid,
             initial_vehicle_positions=scenario_config.vehicle_positions,
             initial_battery_levels=scenario_config.vehicle_batteries,
             scenario_name=scenario_config.name,
             scenario_description=scenario_config.description,
-            step_delay=scenario_config.step_delay
+            step_delay=scenario_config.step_delay,
+            orchestrator_class=NegotiatingOrchestrator,
+            vehicle_class=NegotiatingVehicle
         )
+        
         simulation_running = False
         simulation_paused = False
         await broadcast_state()

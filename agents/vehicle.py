@@ -258,8 +258,17 @@ class VehicleAgent(Agent):
             return
         
         if self.status == VehicleStatus.IDLE:
-            # Wait for assignment
-            return
+            # If we have a target, transition to planning
+            if self.target_position and self.target_station is not None:
+                self.status = VehicleStatus.PLANNING
+                self.model.log_activity(
+                    self.unique_id,
+                    f"Received target assignment, starting to plan path to Station_{self.target_station}",
+                    "action"
+                )
+            else:
+                # Wait for assignment
+                return
         
         # Handle EXITING status - plan path to exit
         if self.status == VehicleStatus.EXITING and self.target_position and not self.path:

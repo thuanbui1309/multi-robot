@@ -574,91 +574,60 @@ def create_station_contention_scenario() -> ScenarioConfig:
 
 def create_negotiation_scenario() -> ScenarioConfig:
     """
-    Scenario 5: Assignment Negotiation
+    Scenario 5: Queue-Based Assignment Negotiation - Simple 2 Robots, 1 Station
     
     Description:
-    This scenario demonstrates agent autonomy and negotiation capabilities. Vehicles can
-    reject assignments from the orchestrator and propose alternatives based on their own
-    reasoning about distance, battery, and preferences.
+    This scenario demonstrates clear queue-based negotiation where the robot assigned
+    to wait (position 1) will negotiate to go first (position 0) based on higher urgency.
+    
+    NEGOTIATION FLOW:
+    
+    Phase 1: Initial Assignment (Distance-Based)
+    - Orchestrator assigns based on distance to station
+    - vehicle_0: Position (2, 2), Battery 20%, Distance to Station = 4
+      → Initially assigned Queue Position 0 (closer)
+    - vehicle_1: Position (10, 2), Battery 15%, Distance to Station = 6  
+      → Initially assigned Queue Position 1 (farther)
+    
+    Phase 2: Negotiation
+    - vehicle_1 has CRITICAL battery (15%) but assigned to wait
+    - vehicle_1 negotiates: "I have critical battery (15%), need to go first!"
+    - vehicle_0 has better battery (20%) and is willing to wait
+    
+    Phase 3: Re-assignment After Negotiation
+    - Orchestrator evaluates: vehicle_1 urgency (15% battery) > vehicle_0 urgency (20% battery)
+    - Queue order SWAPPED:
+      * vehicle_1 → Queue Position 0 (goes first due to critical battery)
+      * vehicle_0 → Queue Position 1 (waits, has safer battery level)
+    
+    Phase 4: Consensus & Execution
+    - Both vehicles accept new assignments
+    - vehicle_1 moves to station first
+    - vehicle_0 waits until vehicle_1 completes charging
     
     Initial Configuration:
     - Grid: 15x12 environment
-    - Agents: 3 vehicles (vehicle_0, vehicle_1, vehicle_2)
-    - Stations: **ONLY 2 stations** for 3 vehicles (forces contention!)
+    - Agents: 2 vehicles
+    - Station: 1 station with capacity 2 (allows queuing)
     - Exit: Bottom left (0, 11)
     
     Agent Configuration:
-    - vehicle_0: Position (1, 1), Battery 23% (very critical) - FAR from both stations
-    - vehicle_1: Position (13, 1), Battery 23% (very critical) - FAR from both stations
-    - vehicle_2: Position (7, 6), Battery 22% (critical) - Between both stations
+    - vehicle_0: Position (2, 2), Battery 25% (LOW) - Close to station, safer battery
+    - vehicle_1: Position (10, 2), Battery 15% (CRITICAL) - Far from station, critical battery
     
     Station Configuration:
-    - Station_0: Position (4, 4), Capacity 1 - Left side
-    - Station_1: Position (11, 4), Capacity 1 - Right side
-    - **NO Station_2** - Only 2 stations for 3 vehicles!
-    
-    Negotiation Scenarios:
-    
-    1. **Rejection due to distance**: Vehicle may reject if assigned station is too far
-       and battery is low (risk of not reaching it)
-    
-    2. **Counter-proposal**: Vehicle proposes alternative closer station
-    
-    3. **Critical battery override**: Vehicle with critical battery (< 25%) can
-       negotiate for priority access to nearest station
-    
-    Negotiation Protocol:
-    1. Orchestrator assigns stations based on algorithm
-    2. Vehicle evaluates assignment:
-       - Calculates if it can reach with current battery
-       - Checks if alternative station is significantly closer
-       - Considers battery criticality
-    3. If assignment is suboptimal:
-       - Vehicle sends AssignmentRejectionMessage with reason
-       - OR sends AssignmentCounterProposalMessage with alternative
-    4. Orchestrator receives negotiation:
-       - Logs the rejection/counter-proposal
-       - Re-evaluates assignments considering vehicle preferences
-       - Sends new assignment or accepts counter-proposal
-    5. Negotiation continues until consensus reached
+    - Station_0: Position (6, 4), Capacity 2
     
     Expected Flow:
-    1. All 3 vehicles request charging simultaneously
-    2. Orchestrator tries to assign with Hungarian algorithm
-    3. PROBLEM: Only 2 stations available for 3 vehicles!
-    4. Orchestrator assigns 2 vehicles initially (e.g., vehicle_0→S0, vehicle_1→S1)
-    5. Third vehicle (vehicle_2) gets no immediate assignment OR gets assigned to occupied station
-    6. Assigned vehicles evaluate their assignments:
-       - vehicle_2 might get assigned to Station_0 or Station_1 (both distance=4)
-       - vehicle_2 (critical battery 22%) may reject if it thinks battery insufficient
-       - vehicle_2 might propose waiting or counter-propose specific station
-    7. Orchestrator handles rejection/counter-proposal
-    8. First 2 vehicles charge, then vehicle_2 gets assignment
-    9. All vehicles eventually charge and exit
-    
-    Guaranteed Negotiation Triggers:
-    - Only 2 stations for 3 vehicles creates resource contention
-    - vehicle_2 in middle with critical battery (22%) will be very selective
-    - If assigned to either station (distance=4), might reject based on battery
-    - Or third vehicle waits and negotiates for specific station when available
-    
-    Success Criteria:
-    - Negotiation messages are logged clearly
-    - Orchestrator adapts to vehicle feedback
-    - All vehicles successfully charge
-    - No vehicles run out of battery
-    - Efficient resolution through negotiation
-    
-    Key Observations:
-    - Vehicle autonomy in decision-making
-    - Multi-agent negotiation with reasoning
-    - Conversation flow visible in logs
-    - Orchestrator flexibility in reassignment
+    1. Initial: vehicle_0 → pos 0 (closer), vehicle_1 → pos 1 (farther)
+    2. Negotiate: vehicle_1 requests pos 0 due to critical battery
+    3. Final: vehicle_1 → pos 0 (critical), vehicle_0 → pos 1 (safer)
+    4. Execute: vehicle_1 goes first, vehicle_0 waits
     
     Returns:
-        ScenarioConfig with negotiation scenario setup
+        ScenarioConfig with queue-based negotiation scenario setup
     """
-    # Create grid with multiple stations spread out
+    # Create grid
     grid_str = """...............
 ...............
 ...............
@@ -674,92 +643,59 @@ def create_negotiation_scenario() -> ScenarioConfig:
     
     grid = Grid.from_string(grid_str)
     
-    # STRATEGIC SETUP FOR GUARANTEED NEGOTIATION:
-    # Only 2 stations for 3 vehicles - forces contention and suboptimal assignment
-    # Station_0 - LEFT SIDE (4, 4)
-    # Station_1 - RIGHT SIDE (11, 4)
-    # NO Station_2 - this forces one vehicle to get a far assignment!
-    grid.add_charging_station(4, 4, capacity=1)   # Station_0 - Left side
-    grid.add_charging_station(11, 4, capacity=1)  # Station_1 - Right side
-    # Note: Only 2 stations for 3 vehicles!
+    # One station with capacity 2 (allows queuing)
+    grid.add_charging_station(6, 4, capacity=1)  # Station_0 - Center
     
     # Set exit
     grid.set_exit(0, 11)
     
-    # Vehicle placement designed to create negotiation:
-    # vehicle_0 and vehicle_1 positioned far from both stations
-    # vehicle_2 positioned close to one station
-    # This forces at least one rejection
+    # 2 vehicles positioned to create clear negotiation scenario
     vehicle_positions = [
-        (1, 1),   # vehicle_0 - far top left, distance to S0=6, to S1=13
-        (13, 1),  # vehicle_1 - far top right, distance to S0=13, to S1=6
-        (7, 6),   # vehicle_2 - middle, distance to S0=5, to S1=6
+        (2, 2),   # vehicle_0 - Close to station, distance = 4 + 2 = 6
+        (10, 2),  # vehicle_1 - Far from station, distance = 4 + 2 = 6 (but with critical battery)
     ]
     
-    # Battery levels designed to FORCE rejection:
-    # vehicle_0 has very low battery - will reject if assigned Station_1 (too far)
-    # vehicle_1 has very low battery - will reject if assigned Station_0 (too far)
-    # vehicle_2 has critical battery - will only accept nearest station
+    # Battery levels: vehicle_1 has CRITICAL battery, vehicle_0 has LOW battery
+    # This should trigger negotiation: vehicle_1 will want to go first despite being farther
     vehicle_batteries = [
-        23.0,  # vehicle_0 - very critical (will reject Station_1, distance=13)
-        23.0,  # vehicle_1 - very critical (will reject Station_0, distance=13)
-        22.0,  # vehicle_2 - critical (will be selective)
+        25.0,  # vehicle_0 - LOW (safer, can wait - above 20% threshold)
+        15.0,  # vehicle_1 - CRITICAL (needs to go first! - below 20% threshold)
     ]
     
     return ScenarioConfig(
-        name="Assignment Negotiation",
+        name="Queue Negotiation: 2 Robots, 1 Station",
         description="""
-        Vehicles negotiate station assignments with orchestrator.
+        Simple negotiation scenario showing queue order change.
 
-        Map Layout (15x12):
-        - **Only 2 charging stations for 3 vehicles**
-        - Vehicles positioned to create assignment conflicts
+        INITIAL ASSIGNMENT (Distance-Based):
+        - vehicle_0: (2,2), Battery 25%, Distance=6 → Queue Position 0
+        - vehicle_1: (10,2), Battery 15%, Distance=6 → Queue Position 1
 
-        Vehicle Configurations:
-        - vehicle_0: (1, 1) with 23% battery (very critical) - Far top left
-          * Distance to Station_0: 6 units (NEAR)
-          * Distance to Station_1: 13 units (FAR - will REJECT)
-        - vehicle_1: (13, 1) with 23% battery (very critical) - Far top right
-          * Distance to Station_0: 13 units (FAR - will REJECT)
-          * Distance to Station_1: 6 units (NEAR)
-        - vehicle_2: (7, 6) with 22% battery (critical) - Center
-          * Distance to Station_0: 5 units
-          * Distance to Station_1: 6 units
+        NEGOTIATION:
+        - vehicle_1 has CRITICAL battery (15% < 20%) but assigned to wait (pos 1)
+        - vehicle_1 negotiates: "Critical battery! Need to go first!"
+        - vehicle_0 has safer battery (25% > 20%) and accepts waiting
+        - Orchestrator re-evaluates based on urgency
 
-        Station Configurations:
-        - Station_0: (4, 4), Capacity 1 - Left side
-        - Station_1: (11, 4), Capacity 1 - Right side
-        - **NO third station** - Creates resource contention!
+        FINAL ASSIGNMENT (After Negotiation):
+        - vehicle_1: Queue Position 0 (critical battery wins)
+        - vehicle_0: Queue Position 1 (safer battery, can wait)
 
-        Guaranteed Rejection Setup:
-        With only 2 stations for 3 vehicles and very low batteries (23%):
-        
-        - Max acceptable distance: 10 units
-        - Battery safety margin: 2.0x (conservative)
-        - Critical battery threshold: 25%
-        
-        Expected rejections:
-        - vehicle_0 assigned Station_1: REJECT (distance=13 > 10)
-        - vehicle_1 assigned Station_0: REJECT (distance=13 > 10)
-        - Either will counter-propose their nearest station
+        EXECUTION:
+        - vehicle_1 moves to station first
+        - vehicle_0 waits until vehicle_1 completes charging
+        - Both eventually charge and exit
 
-        Expected Negotiation:
-        1. Orchestrator assigns based on algorithm
-        2. If vehicle_0 gets Station_1: "Rejecting - distance_too_far (13 > 10)"
-        3. vehicle_0 counter-proposes: "Prefer Station_0 (distance=6)"
-        4. Orchestrator accepts counter-proposal or finds alternative
-
-        Success Criteria:
-        - Clear negotiation conversation in logs
-        - Orchestrator adapts to vehicle reasoning
-        - All vehicles reach suitable stations
-        - No battery depletion during negotiation
-
-        This scenario demonstrates autonomous agent decision-making and multi-agent negotiation.""",
+        Watch for:
+        1. Initial assignment based on distance (both equal distance)
+        2. vehicle_1 negotiation message (critical battery claim)
+        3. Queue order swap (pos 0 ↔ pos 1)
+        4. vehicle_1 moves first, vehicle_0 waits
+        """,
         grid=grid,
         vehicle_positions=vehicle_positions,
         vehicle_batteries=vehicle_batteries,
-        expected_outcome="All vehicles negotiate and successfully charge at suitable stations",
+        expected_outcome="vehicle_1 negotiates to go first due to critical battery, vehicle_0 accepts waiting",
         step_delay=0.5
     )
 

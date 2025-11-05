@@ -1,12 +1,14 @@
-from typing import List, Tuple, Dict, Any, Optional
+from typing import List, Tuple, Dict, Any, Optional, Type
 import random
-from mesa import Model
+from mesa import Model, Agent
 from mesa.time import BaseScheduler
 from core.grid import Grid
 from core.reservation import ReservationTable
 from core.metrics import SimulationMetrics
 from agents.vehicle import VehicleAgent
 from agents.orchestrator import OrchestratorAgent
+from agents.negotiating_vehicle import NegotiatingVehicle
+from agents.negotiating_orchestrator import NegotiatingOrchestrator
 
 class OrderedScheduler(BaseScheduler):
     """
@@ -22,9 +24,11 @@ class OrderedScheduler(BaseScheduler):
     def add(self, agent):
         """Add agent to scheduler."""
         super().add(agent)
+        # Check if agent is a vehicle (including subclasses)
         if isinstance(agent, VehicleAgent):
             self.vehicle_agents.append(agent)
-        elif isinstance(agent, OrchestratorAgent):
+        # Check if agent is orchestrator (including subclasses) 
+        else:
             self.orchestrator = agent
     
     def remove(self, agent):
@@ -66,7 +70,9 @@ class ChargingSimulationModel(Model):
         initial_battery_levels: Optional[List[float]] = None,
         scenario_name: str = "Unknown Scenario",
         scenario_description: str = "",
-        step_delay: float = 0.3
+        step_delay: float = 0.3,
+        orchestrator_class: Type[Agent] = None,
+        vehicle_class: Type[Agent] = None
     ):
         """
         Initialize simulation model.
@@ -78,13 +84,25 @@ class ChargingSimulationModel(Model):
             scenario_name: Name of the scenario being run
             scenario_description: Description of the scenario
             step_delay: Delay between steps for visualization
+            orchestrator_class: Class to use for orchestrator (default: NegotiatingOrchestrator)
+            vehicle_class: Class to use for vehicles (default: NegotiatingVehicle)
         """
         super().__init__()
+        
+        # Use negotiating agents by default
+        if orchestrator_class is None:
+            orchestrator_class = NegotiatingOrchestrator
+        if vehicle_class is None:
+            vehicle_class = NegotiatingVehicle
         
         # Scenario information
         self.scenario_name = scenario_name
         self.scenario_description = scenario_description
         self.step_delay = step_delay
+        
+        # Agent class types
+        self.orchestrator_class = orchestrator_class
+        self.vehicle_class = vehicle_class
         
         # Initial delay for observation (reduced to ~0.5 seconds)
         self.initial_delay_steps = 2  # ~0.3 seconds at 0.15s per step
@@ -109,11 +127,14 @@ class ChargingSimulationModel(Model):
         self.vehicle_trails: Dict[str, List[Tuple[int, int]]] = {}
         self.max_trail_length = 50  # Increased to show more of the path
         
+        # Vehicle states (for queue negotiation checking)
+        self.vehicle_states: Dict[str, Dict] = {}
+        
         # Agent scheduling (ordered: vehicles first, then orchestrator)
         self.schedule = OrderedScheduler(self)
         
-        # Create orchestrator agent
-        self.orchestrator = OrchestratorAgent("orchestrator", self)
+        # Create orchestrator agent using specified class
+        self.orchestrator = orchestrator_class("orchestrator", self)
         self.schedule.add(self.orchestrator)
         
         # Create vehicle agents
@@ -148,17 +169,12 @@ class ChargingSimulationModel(Model):
         vehicle_id = f"vehicle_{self._vehicle_counter}"
         self._vehicle_counter += 1
         
-        # Enable negotiation for Scenario 5
-        enable_negotiation = "negotiation" in self.scenario_name.lower()
-        
-        vehicle = VehicleAgent(
+        # Create vehicle using specified class
+        vehicle = self.vehicle_class(
             unique_id=vehicle_id,
             model=self,
-            position=position,
-            battery_level=battery_level,
-            battery_drain_rate=0.5,
-            charge_rate=5.0,  # Faster charging: 5% per tick instead of 2%
-            enable_negotiation=enable_negotiation
+            start_pos=position,
+            battery_level=battery_level
         )
         
         self.vehicles[vehicle_id] = vehicle
@@ -207,14 +223,17 @@ class ChargingSimulationModel(Model):
         # Clear logs from previous step (after initial delay)
         self.activity_logs.clear()
         
-        # Don't clear message queue here - let it accumulate
-        # Messages will be processed by orchestrator
+        # Don't clear message queue - messages persist until next step
+        # This allows orchestrator (steps last) to send messages 
+        # that vehicles (step first) can process in next iteration
         
         # Execute all agents
         self.schedule.step()
         
         # Clear processed messages after all agents have stepped
-        self.message_queue.clear()
+        # Keep only recent messages (last 100) to prevent memory growth
+        if len(self.message_queue) > 100:
+            self.message_queue = self.message_queue[-50:]
         
         # Check if all vehicles have completed (reached exit)
         all_completed = all(
@@ -259,7 +278,7 @@ class ChargingSimulationModel(Model):
             Dictionary containing full simulation state
         """
         # Get vehicle states with paths and trails
-        vehicle_states = []
+        vehicle_states_list = []
         vehicle_positions = {}
         
         for vehicle_id, vehicle in self.vehicles.items():
@@ -269,8 +288,11 @@ class ChargingSimulationModel(Model):
             state['path_index'] = vehicle.path_index
             # Add trail information
             state['trail'] = self.vehicle_trails.get(vehicle_id, [])
-            vehicle_states.append(state)
+            vehicle_states_list.append(state)
             vehicle_positions[vehicle.position] = vehicle_id
+            
+            # Update instance vehicle_states for negotiation access
+            self.vehicle_states[vehicle_id] = state
             
             # Update trail
             if vehicle_id not in self.vehicle_trails:
@@ -301,7 +323,7 @@ class ChargingSimulationModel(Model):
             'scenario_name': self.scenario_name,
             'scenario_description': self.scenario_description,
             'step_delay': self.step_delay,
-            'vehicles': vehicle_states,
+            'vehicles': vehicle_states_list,
             'stations': station_states,
             'orchestrator': orchestrator_state,
             'grid_string': self.grid.to_string(vehicle_positions),

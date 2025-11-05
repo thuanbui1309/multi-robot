@@ -14,6 +14,10 @@ class MessageType(str, Enum):
     RESERVATION_RESPONSE = "reservation_response"
     OBSTACLE_ALERT = "obstacle_alert"
     CHARGING_COMPLETE = "charging_complete"
+    QUEUE_ASSIGNMENT = "queue_assignment"
+    QUEUE_NEGOTIATION = "queue_negotiation"
+    ASSIGNMENT_ACCEPTED = "assignment_accepted"
+    CONSENSUS_REACHED = "consensus_reached"
 
 
 class VehicleStatus(str, Enum):
@@ -114,3 +118,38 @@ class AssignmentCounterProposalMessage(Message):
     reason: str
     current_position: Tuple[int, int]
     battery_level: float
+
+
+class QueueAssignmentMessage(Message):
+    """Queue-based station assignment from orchestrator to vehicle."""
+    msg_type: MessageType = MessageType.QUEUE_ASSIGNMENT
+    station_id: int
+    station_position: Tuple[int, int]
+    queue_position: int  # Position in station's queue (0 = first)
+    total_in_queue: int  # Total agents assigned to this station
+    all_assignments: dict  # {vehicle_id: (station_id, queue_pos)}
+
+
+class QueueNegotiationMessage(Message):
+    """Vehicle negotiates to change queue position."""
+    msg_type: MessageType = MessageType.QUEUE_NEGOTIATION
+    station_id: int
+    current_queue_position: int
+    desired_queue_position: int
+    reason: str  # e.g., "critical_battery", "closer_position", "urgent_task"
+    urgency_score: float = Field(ge=0.0, le=10.0)  # 10 = most urgent
+
+
+class AssignmentAcceptedMessage(Message):
+    """Vehicle accepts the assignment."""
+    msg_type: MessageType = MessageType.ASSIGNMENT_ACCEPTED
+    station_id: int
+    queue_position: int
+
+
+class ConsensusReachedMessage(Message):
+    """Orchestrator broadcasts that consensus is reached."""
+    msg_type: MessageType = MessageType.CONSENSUS_REACHED
+    final_assignments: dict  # {vehicle_id: (station_id, queue_pos)}
+    can_proceed: bool
+
