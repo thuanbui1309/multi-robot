@@ -1,6 +1,7 @@
 import sys
 import uvicorn
 from colorama import init, Fore, Style
+from web.server import app
 
 # Initialize colorama for colored terminal output
 init()
@@ -25,7 +26,6 @@ def main():
     
     try:
         # Import and run the FastAPI app
-        from web.server import app
         uvicorn.run(app, host=host, port=port, log_level="info")
     except KeyboardInterrupt:
         print()

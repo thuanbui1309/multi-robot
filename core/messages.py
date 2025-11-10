@@ -152,4 +152,3 @@ class ConsensusReachedMessage(Message):
     msg_type: MessageType = MessageType.CONSENSUS_REACHED
     final_assignments: dict  # {vehicle_id: (station_id, queue_pos)}
     can_proceed: bool
-

@@ -36,43 +36,36 @@ class OrchestratorAgent(Agent):
         # Tracking
         self.vehicle_states: Dict[str, Dict] = {}
         self.station_states: Dict[int, Dict] = {}
-        self.active_assignments: Dict[str, int] = {}  # vehicle_id -> station_id
-        self.station_assignments: Dict[int, str] = {}  # station_id -> vehicle_id
+        self.active_assignments: Dict[str, int] = {}  
+        self.station_assignments: Dict[int, str] = {}  
         self.pending_assignments: Set[str] = set()
         
         # Configuration
-        self.battery_threshold = 30.0  # Assign charging when battery < 30%
-        self.assignment_interval = 1  # Reassign every tick for immediate response
-        self.last_assignment_time = -1  # Start at -1 to trigger assignment on first tick
+        self.battery_threshold = 30.0  
+        self.assignment_interval = 1  
+        self.last_assignment_time = -1 
     
     def step(self):
         """Execute one step of orchestrator behavior."""
         current_time = self.model.schedule.steps
-        
-        # 1. Process incoming messages
         self._process_messages()
-        
-        # 2. Update station states
         self._update_station_states()
-        
-        # 3. Check if it's time to make assignments
+
         if current_time - self.last_assignment_time >= self.assignment_interval:
             self._make_assignments()
             self.last_assignment_time = current_time
         
-        # 4. Monitor for issues
         self._monitor_vehicles()
     
     def _process_messages(self):
         """Process incoming messages from vehicles."""
         for msg in self.model.message_queue:
-            if msg.receiver_id != str(self.unique_id):  # Compare with string
+            if msg.receiver_id != str(self.unique_id): 
                 continue
             
             if isinstance(msg, StatusUpdateMessage):
-                # Update vehicle state
                 self.vehicle_states[msg.sender_id] = {
-                    'id': msg.sender_id,  # Add vehicle ID
+                    'id': msg.sender_id,
                     'position': msg.position,
                     'battery_level': msg.battery_level,
                     'status': msg.status,
@@ -81,16 +74,13 @@ class OrchestratorAgent(Agent):
                 }
                 
             elif isinstance(msg, ChargingCompleteMessage):
-                # Vehicle finished charging, remove assignment
                 if msg.sender_id in self.active_assignments:
                     station_id = self.active_assignments[msg.sender_id]
                     del self.active_assignments[msg.sender_id]
                     
-                    # Only delete if exists in station_assignments
                     if station_id in self.station_assignments:
                         del self.station_assignments[station_id]
                     
-                    # Log completion
                     self.model.log_activity(
                         "Orchestrator",
                         f"{msg.sender_id} completed charging at Station_{station_id}",
@@ -98,11 +88,9 @@ class OrchestratorAgent(Agent):
                     )
             
             elif isinstance(msg, AssignmentRejectionMessage):
-                # Vehicle rejected assignment
                 self._handle_assignment_rejection(msg)
                     
             elif isinstance(msg, AssignmentCounterProposalMessage):
-                # Vehicle proposed alternative assignment
                 self._handle_counter_proposal(msg)
     
     def _handle_status_update(self, msg: StatusUpdateMessage):
@@ -120,11 +108,9 @@ class OrchestratorAgent(Agent):
         """Handle charging completion."""
         vehicle_id = msg.sender_id
         
-        # Remove from assigned vehicles
         if vehicle_id in self.active_assignments:
             del self.active_assignments[vehicle_id]
-        
-        # Remove from pending
+
         self.pending_assignments.discard(vehicle_id)
     
     def _update_station_states(self):
@@ -149,10 +135,8 @@ class OrchestratorAgent(Agent):
     
     def _make_assignments(self):
         """Check for vehicles needing charging and assign stations."""
-        # Find vehicles needing charging
         vehicles_needing_charge = []
         for vehicle_id, state in self.vehicle_states.items():
-            # Skip if already assigned or not needing charge
             if vehicle_id in self.active_assignments:
                 continue
             if state['status'] != VehicleStatus.IDLE:
@@ -165,9 +149,7 @@ class OrchestratorAgent(Agent):
         if not vehicles_needing_charge:
             return
         
-        # Log assignment check - only when we have vehicles needing charge
         if len(vehicles_needing_charge) > 1:
-            # Multiple vehicles competing - log all candidates
             self.model.log_activity(
                 "Orchestrator",
                 f"Multiple vehicles requesting charging ({len(vehicles_needing_charge)} vehicles)",
@@ -180,7 +162,6 @@ class OrchestratorAgent(Agent):
                     "info"
                 )
         else:
-            # Single vehicle
             vehicle = vehicles_needing_charge[0]
             self.model.log_activity(
                 "Orchestrator",
@@ -188,7 +169,6 @@ class OrchestratorAgent(Agent):
                 "info"
             )
         
-        # Get available stations
         available_stations = [
             sid for sid, sstate in self.station_states.items()
             if sid not in self.station_assignments and sstate['occupied'] < sstate['capacity']
@@ -202,13 +182,11 @@ class OrchestratorAgent(Agent):
             )
             return
         
-        # Use Hungarian algorithm for assignment
         assignments = self.assigner.assign(
             vehicles_needing_charge,
             [self.station_states[sid] for sid in available_stations]
         )
         
-        # Send assignments
         for vehicle_id, station_id in assignments.items():
             if station_id is not None:
                 self._send_assignment(vehicle_id, station_id)
@@ -220,10 +198,8 @@ class OrchestratorAgent(Agent):
         if not station:
             return
         
-        # Get vehicle state and calculate assignment factors
         vehicle_state = self.vehicle_states.get(vehicle_id)
         if vehicle_state:
-            # Calculate distance to station
             distance = self.assigner.calculate_distance(
                 vehicle_state['position'],
                 station['position']
@@ -231,7 +207,6 @@ class OrchestratorAgent(Agent):
             
             battery_level = vehicle_state['battery_level']
             
-            # Log assignment with reasoning
             self.model.log_activity(
                 "Orchestrator",
                 f"Assigning {vehicle_id} to Station_{station_id} at {station['position']} - Reason: distance={distance:.1f}, battery={battery_level:.1f}%",
@@ -247,21 +222,17 @@ class OrchestratorAgent(Agent):
         
         # Create assignment message
         msg = AssignmentMessage(
-            sender_id=str(self.unique_id),  # Convert to string
+            sender_id=str(self.unique_id), 
             receiver_id=vehicle_id,
             timestamp=self.model.schedule.steps,
             station_id=station_id,
             station_position=station['position']
         )
         
-        # Add to model's outbox for delivery
         self.model.message_queue.append(msg)
-        
-        # Track assignment
         self.active_assignments[vehicle_id] = station_id
         self.pending_assignments.add(vehicle_id)
         
-        # Deliver directly to vehicle
         for agent in self.model.schedule.agents:
             if hasattr(agent, 'unique_id') and agent.unique_id == vehicle_id:
                 if hasattr(agent, 'receive_assignment'):
@@ -271,14 +242,11 @@ class OrchestratorAgent(Agent):
     def _monitor_vehicles(self):
         """Monitor vehicles for issues."""
         for vehicle_id, state in self.vehicle_states.items():
-            # Check for stuck vehicles
             if state['status'] == VehicleStatus.STUCK:
-                # Could implement recovery logic here
                 pass
             
             # Check for critically low battery
             if state['battery_level'] < 10.0:
-                # Priority assignment
                 if vehicle_id not in self.active_assignments:
                     self._assign_priority_vehicle(vehicle_id)
     
@@ -288,7 +256,6 @@ class OrchestratorAgent(Agent):
         if not state:
             return
         
-        # Find nearest available station
         min_distance = float('inf')
         best_station = None
         
@@ -316,20 +283,17 @@ class OrchestratorAgent(Agent):
             "warning"
         )
         
-        # Remove the rejected assignment
         if msg.sender_id in self.active_assignments:
             del self.active_assignments[msg.sender_id]
         if msg.rejected_station_id in self.station_assignments:
             del self.station_assignments[msg.rejected_station_id]
         
-        # Try to find a better assignment for this vehicle
         self.model.log_activity(
             "Orchestrator",
             f"Finding alternative assignment for {msg.sender_id}",
             "info"
         )
         
-        # Get vehicle state
         vehicle_state = {
             'id': msg.sender_id,
             'position': msg.current_position,
@@ -337,7 +301,6 @@ class OrchestratorAgent(Agent):
             'status': VehicleStatus.IDLE
         }
         
-        # Find available stations (excluding the rejected one)
         available_stations = [
             sid for sid, sstate in self.station_states.items()
             if sid != msg.rejected_station_id and 
@@ -346,7 +309,6 @@ class OrchestratorAgent(Agent):
         ]
         
         if available_stations:
-            # Assign to next best station
             assignments = self.assigner.assign(
                 [vehicle_state],
                 [self.station_states[sid] for sid in available_stations]
@@ -377,7 +339,6 @@ class OrchestratorAgent(Agent):
             "info"
         )
         
-        # Check if proposed station is available
         proposed_station = self.station_states.get(msg.proposed_station_id)
         
         if not proposed_station:
@@ -386,17 +347,16 @@ class OrchestratorAgent(Agent):
                 f"Proposed Station_{msg.proposed_station_id} does not exist",
                 "warning"
             )
-            self._handle_assignment_rejection(msg)  # Fall back to rejection handling
+            self._handle_assignment_rejection(msg) 
             return
         
-        # Check if proposed station is available
         if msg.proposed_station_id in self.station_assignments:
             self.model.log_activity(
                 "Orchestrator",
                 f"Proposed Station_{msg.proposed_station_id} already assigned to {self.station_assignments[msg.proposed_station_id]}",
                 "warning"
             )
-            self._handle_assignment_rejection(msg)  # Fall back to rejection handling
+            self._handle_assignment_rejection(msg) 
             return
         
         if proposed_station['occupied'] >= proposed_station['capacity']:
@@ -405,23 +365,20 @@ class OrchestratorAgent(Agent):
                 f"Proposed Station_{msg.proposed_station_id} is at full capacity",
                 "warning"
             )
-            self._handle_assignment_rejection(msg)  # Fall back to rejection handling
+            self._handle_assignment_rejection(msg) 
             return
         
-        # Counter-proposal is valid - accept it!
         self.model.log_activity(
             "Orchestrator",
             f"Accepting counter-proposal: Reassigning {msg.sender_id} from Station_{msg.rejected_station_id} to Station_{msg.proposed_station_id}",
             "action"
         )
         
-        # Remove old assignment
         if msg.sender_id in self.active_assignments:
             del self.active_assignments[msg.sender_id]
         if msg.rejected_station_id in self.station_assignments:
             del self.station_assignments[msg.rejected_station_id]
         
-        # Create new assignment
         self._send_assignment(msg.sender_id, msg.proposed_station_id)
         self.station_assignments[msg.proposed_station_id] = msg.sender_id
     

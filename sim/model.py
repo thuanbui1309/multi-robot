@@ -123,17 +123,10 @@ class ChargingSimulationModel(Model):
         # Agent activity logs for visualization
         self.activity_logs: List[Dict[str, str]] = []
         
-        # Vehicle trails for visualization (last N positions per vehicle)
         self.vehicle_trails: Dict[str, List[Tuple[int, int]]] = {}
         self.max_trail_length = 50  # Increased to show more of the path
-        
-        # Vehicle states (for queue negotiation checking)
         self.vehicle_states: Dict[str, Dict] = {}
-        
-        # Agent scheduling (ordered: vehicles first, then orchestrator)
         self.schedule = OrderedScheduler(self)
-        
-        # Create orchestrator agent using specified class
         self.orchestrator = orchestrator_class("orchestrator", self)
         self.schedule.add(self.orchestrator)
         
@@ -147,9 +140,6 @@ class ChargingSimulationModel(Model):
             vehicle_id = self.add_vehicle(pos, battery)
         
         self.running = True
-        
-        # Don't add initial logs here - will be added in first step
-        # to avoid duplicate broadcasts
     
     def add_vehicle(
         self,
@@ -194,8 +184,6 @@ class ChargingSimulationModel(Model):
     
     def step(self):
         """Execute one step of the simulation."""
-        # Apply initial delay at the start (slower for first few steps)
-        # This allows user to see the initial messages without agents acting
         if self.steps_with_initial_delay < self.initial_delay_steps:
             self.steps_with_initial_delay += 1
             
@@ -214,28 +202,17 @@ class ChargingSimulationModel(Model):
                         "info"
                     )
             else:
-                # Clear logs after first step to prevent duplicates
                 self.activity_logs.clear()
             
-            # Don't execute agents during initial delay
             return
         
-        # Clear logs from previous step (after initial delay)
         self.activity_logs.clear()
         
-        # Don't clear message queue - messages persist until next step
-        # This allows orchestrator (steps last) to send messages 
-        # that vehicles (step first) can process in next iteration
-        
-        # Execute all agents
         self.schedule.step()
         
-        # Clear processed messages after all agents have stepped
-        # Keep only recent messages (last 100) to prevent memory growth
         if len(self.message_queue) > 100:
             self.message_queue = self.message_queue[-50:]
         
-        # Check if all vehicles have completed (reached exit)
         all_completed = all(
             vehicle.status.value == 'completed' 
             for vehicle in self.vehicles.values()
@@ -252,10 +229,8 @@ class ChargingSimulationModel(Model):
                 self.completion_logged = True
             return
         
-        # Update metrics
         self.metrics.increment_tick()
         
-        # Cleanup old reservations periodically
         if self.schedule.steps % 10 == 0:
             self.reservation_table.cleanup_old_reservations(
                 self.schedule.steps,
@@ -277,21 +252,16 @@ class ChargingSimulationModel(Model):
         Returns:
             Dictionary containing full simulation state
         """
-        # Get vehicle states with paths and trails
         vehicle_states_list = []
         vehicle_positions = {}
         
         for vehicle_id, vehicle in self.vehicles.items():
             state = vehicle.get_state()
-            # Add current path information
             state['current_path'] = vehicle.path if vehicle.path else []
             state['path_index'] = vehicle.path_index
-            # Add trail information
             state['trail'] = self.vehicle_trails.get(vehicle_id, [])
             vehicle_states_list.append(state)
             vehicle_positions[vehicle.position] = vehicle_id
-            
-            # Update instance vehicle_states for negotiation access
             self.vehicle_states[vehicle_id] = state
             
             # Update trail
@@ -300,7 +270,6 @@ class ChargingSimulationModel(Model):
             trail = self.vehicle_trails[vehicle_id]
             if not trail or trail[-1] != vehicle.position:
                 trail.append(vehicle.position)
-                # Keep only last N positions
                 if len(trail) > self.max_trail_length:
                     trail.pop(0)
         

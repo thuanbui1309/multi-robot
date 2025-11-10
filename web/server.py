@@ -75,20 +75,63 @@ async def handle_message(data: dict, websocket: WebSocket):
         # Create new simulation from scenario config
         scenario_config = get_scenario(scenario)
         
-        # Use negotiating agents by default for all scenarios
-        from agents.negotiating_orchestrator import NegotiatingOrchestrator
-        from agents.negotiating_vehicle import NegotiatingVehicle
-        
-        simulation_model = ChargingSimulationModel(
-            grid=scenario_config.grid,
-            initial_vehicle_positions=scenario_config.vehicle_positions,
-            initial_battery_levels=scenario_config.vehicle_batteries,
-            scenario_name=scenario_config.name,
-            scenario_description=scenario_config.description,
-            step_delay=scenario_config.step_delay,
-            orchestrator_class=NegotiatingOrchestrator,
-            vehicle_class=NegotiatingVehicle
-        )
+        # Choose agent classes based on scenario
+        if scenario == 'scenario_6_tit_for_tat':
+            # Use Tit-for-Tat agents for Scenario 6
+            from agents.tit_for_tat_orchestrator import TitForTatOrchestrator
+            from agents.tit_for_tat_vehicle import TitForTatVehicle
+            
+            # Create model with TFT orchestrator
+            simulation_model = ChargingSimulationModel(
+                grid=scenario_config.grid,
+                initial_vehicle_positions=[],  # Will add vehicles manually
+                initial_battery_levels=[],
+                scenario_name=scenario_config.name,
+                scenario_description=scenario_config.description,
+                step_delay=scenario_config.step_delay,
+                orchestrator_class=TitForTatOrchestrator,
+                vehicle_class=TitForTatVehicle
+            )
+            
+            # Manually create vehicles with different strategies
+            strategies = ['cooperative', 'competitive', 'tit_for_tat']
+            for i, (pos, battery) in enumerate(zip(scenario_config.vehicle_positions, scenario_config.vehicle_batteries)):
+                vehicle_id = f"vehicle_{i}"
+                strategy = strategies[i] if i < len(strategies) else 'tit_for_tat'
+                
+                vehicle = TitForTatVehicle(
+                    unique_id=vehicle_id,
+                    model=simulation_model,
+                    position=pos,
+                    battery_level=battery,
+                    strategy=strategy
+                )
+                
+                simulation_model.vehicles[vehicle_id] = vehicle
+                simulation_model.schedule.add(vehicle)
+                simulation_model._vehicle_counter += 1
+                
+                # Log strategy assignment
+                simulation_model.log_activity(
+                    vehicle_id,
+                    f"Initialized with {strategy.upper()} strategy",
+                    "info"
+                )
+        else:
+            # Use negotiating agents by default for all other scenarios
+            from agents.negotiating_orchestrator import NegotiatingOrchestrator
+            from agents.negotiating_vehicle import NegotiatingVehicle
+            
+            simulation_model = ChargingSimulationModel(
+                grid=scenario_config.grid,
+                initial_vehicle_positions=scenario_config.vehicle_positions,
+                initial_battery_levels=scenario_config.vehicle_batteries,
+                scenario_name=scenario_config.name,
+                scenario_description=scenario_config.description,
+                step_delay=scenario_config.step_delay,
+                orchestrator_class=NegotiatingOrchestrator,
+                vehicle_class=NegotiatingVehicle
+            )
         
         simulation_running = True
         simulation_paused = False
@@ -109,20 +152,55 @@ async def handle_message(data: dict, websocket: WebSocket):
         scenario = data.get("scenario", "scenario_1_simple")
         scenario_config = get_scenario(scenario)
         
-        # Use negotiating agents by default for all scenarios
-        from agents.negotiating_orchestrator import NegotiatingOrchestrator
-        from agents.negotiating_vehicle import NegotiatingVehicle
-        
-        simulation_model = ChargingSimulationModel(
-            grid=scenario_config.grid,
-            initial_vehicle_positions=scenario_config.vehicle_positions,
-            initial_battery_levels=scenario_config.vehicle_batteries,
-            scenario_name=scenario_config.name,
-            scenario_description=scenario_config.description,
-            step_delay=scenario_config.step_delay,
-            orchestrator_class=NegotiatingOrchestrator,
-            vehicle_class=NegotiatingVehicle
-        )
+        # Choose agent classes based on scenario
+        if scenario == 'scenario_6_tit_for_tat':
+            # Use Tit-for-Tat agents for Scenario 6
+            from agents.tit_for_tat_orchestrator import TitForTatOrchestrator
+            from agents.tit_for_tat_vehicle import TitForTatVehicle
+            
+            simulation_model = ChargingSimulationModel(
+                grid=scenario_config.grid,
+                initial_vehicle_positions=[],
+                initial_battery_levels=[],
+                scenario_name=scenario_config.name,
+                scenario_description=scenario_config.description,
+                step_delay=scenario_config.step_delay,
+                orchestrator_class=TitForTatOrchestrator,
+                vehicle_class=TitForTatVehicle
+            )
+            
+            # Manually create vehicles with different strategies
+            strategies = ['cooperative', 'competitive', 'tit_for_tat']
+            for i, (pos, battery) in enumerate(zip(scenario_config.vehicle_positions, scenario_config.vehicle_batteries)):
+                vehicle_id = f"vehicle_{i}"
+                strategy = strategies[i] if i < len(strategies) else 'tit_for_tat'
+                
+                vehicle = TitForTatVehicle(
+                    unique_id=vehicle_id,
+                    model=simulation_model,
+                    position=pos,
+                    battery_level=battery,
+                    strategy=strategy
+                )
+                
+                simulation_model.vehicles[vehicle_id] = vehicle
+                simulation_model.schedule.add(vehicle)
+                simulation_model._vehicle_counter += 1
+        else:
+            # Use negotiating agents by default for all other scenarios
+            from agents.negotiating_orchestrator import NegotiatingOrchestrator
+            from agents.negotiating_vehicle import NegotiatingVehicle
+            
+            simulation_model = ChargingSimulationModel(
+                grid=scenario_config.grid,
+                initial_vehicle_positions=scenario_config.vehicle_positions,
+                initial_battery_levels=scenario_config.vehicle_batteries,
+                scenario_name=scenario_config.name,
+                scenario_description=scenario_config.description,
+                step_delay=scenario_config.step_delay,
+                orchestrator_class=NegotiatingOrchestrator,
+                vehicle_class=NegotiatingVehicle
+            )
         
         simulation_running = False
         simulation_paused = False
@@ -209,55 +287,40 @@ HTML_TEMPLATE = """
         }
         
         .container {
-            display: flex;
-            flex-direction: column;
+            display: grid;
+            grid-template-columns: 300px 1fr 350px;
             height: 100vh;
+            gap: 0;
         }
         
-        /* Header */
-        header {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            padding: 15px 30px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.5);
-        }
-        
-        header h1 {
-            font-size: 24px;
-            margin-bottom: 5px;
-        }
-        
-        header p {
-            font-size: 14px;
-            opacity: 0.9;
-        }
-        
-        /* Logs Section - Top Priority */
+        /* Logs Section - Left Sidebar */
         .logs-section {
             background: #1a1a1a;
-            border-bottom: 2px solid #333;
-            padding: 10px 20px;
-            max-height: 180px;
+            border-right: 2px solid #333;
+            padding: 15px;
             overflow-y: auto;
+            display: flex;
+            flex-direction: column;
         }
         
         .logs-title {
             font-size: 14px;
             font-weight: bold;
             color: #4fc3f7;
-            margin-bottom: 8px;
-            display: flex;
-            align-items: center;
-            gap: 8px;
+            margin-bottom: 12px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
         }
         
         .log-entry {
             font-family: 'Consolas', 'Monaco', monospace;
             font-size: 11px;
-            padding: 4px 8px;
-            margin: 2px 0;
+            padding: 6px 10px;
+            margin: 3px 0;
             border-left: 3px solid transparent;
             background: rgba(255,255,255,0.03);
             border-radius: 3px;
+            line-height: 1.4;
         }
         
         .log-orchestrator {
@@ -317,23 +380,16 @@ HTML_TEMPLATE = """
         .log-system .log-agent {
             color: #9c27b0;
         }
-            color: #ffd43b;
+        
+        .log-system .log-agent {
+            color: #9c27b0;
         }
         
         .log-action { color: #51cf66; }
         .log-warning { color: #ff9800; }
         .log-error { color: #ff6b6b; }
         
-        /* Main Content - Horizontal Layout */
-        .main-content {
-            flex: 1;
-            display: grid;
-            grid-template-columns: 1fr 350px;
-            gap: 0;
-            overflow: hidden;
-        }
-        
-        /* Canvas Area */
+        /* Canvas Area - Center */
         .canvas-area {
             background: #000;
             display: flex;
@@ -342,7 +398,7 @@ HTML_TEMPLATE = """
             justify-content: center;
             padding: 20px;
             position: relative;
-            overflow: auto;  /* Enable scrolling for large maps */
+            overflow: auto;
         }
         
         #simulationCanvas {
@@ -382,7 +438,7 @@ HTML_TEMPLATE = """
             border-radius: 3px;
         }
         
-        /* Control Panel */
+        /* Control Panel - Right Sidebar */
         .control-panel {
             background: #1a1a1a;
             border-left: 2px solid #333;
@@ -435,11 +491,6 @@ HTML_TEMPLATE = """
         
         input[type="range"] {
             width: 100%;
-        }
-        
-        .speed-value {
-            color: #4fc3f7;
-            font-weight: bold;
         }
         
         button {
@@ -564,28 +615,6 @@ HTML_TEMPLATE = """
         .battery-medium { background: #ffd43b; }
         .battery-low { background: #ff6b6b; }
         
-        /* Connection Status */
-        .connection-status {
-            position: fixed;
-            top: 10px;
-            right: 10px;
-            padding: 6px 12px;
-            border-radius: 20px;
-            font-size: 11px;
-            font-weight: bold;
-            z-index: 1000;
-        }
-        
-        .connected {
-            background: #51cf66;
-            color: #000;
-        }
-        
-        .disconnected {
-            background: #ff6b6b;
-            color: #fff;
-        }
-        
         /* Scrollbar */
         ::-webkit-scrollbar {
             width: 8px;
@@ -607,67 +636,51 @@ HTML_TEMPLATE = """
     </style>
 </head>
 <body>
-    <div class="connection-status" id="connectionStatus">Connecting...</div>
-    
     <div class="container">
-        <!-- Header -->
-        <header>
-            <h1>Multi-Robot Charging Simulation</h1>
-        </header>
-        
-        <!-- Agent Logs - Top Priority -->
+        <!-- Left: Agent Logs -->
         <div class="logs-section">
-            <div class="logs-title">
-                <span>Agent Activity Logs</span>
-                <span style="font-size: 10px; color: #666;">(Agent thinking process)</span>
-            </div>
+            <div class="logs-title">Agent Activity</div>
             <div id="logsList"></div>
         </div>
         
-        <!-- Main Content -->
-        <div class="main-content">
-            <!-- Canvas Visualization -->
-            <div class="canvas-area">
-                <canvas id="simulationCanvas"></canvas>
-                
-                <!-- Legend (dynamically populated) -->
-                <div class="canvas-legend" id="canvasLegend">
-                    <div class="legend-title">Legend</div>
-                </div>
+        <!-- Center: Canvas Visualization -->
+        <div class="canvas-area">
+            <canvas id="simulationCanvas"></canvas>
+            
+            <!-- Legend -->
+            <div class="canvas-legend" id="canvasLegend">
+                <div class="legend-title">Legend</div>
+            </div>
+        </div>
+        
+        <!-- Right: Control Panel -->
+        <div class="control-panel">
+            <!-- Scenario Description -->
+            <div class="panel-section" id="scenarioDescription" style="display: none;">
+                <div class="section-title">Scenario Info</div>
+                <div style="font-size: 11px; color: #ccc; line-height: 1.6; max-height: 300px; overflow-y: auto; white-space: pre-line;" id="scenarioDescText"></div>
             </div>
             
-            <!-- Control Panel -->
-            <div class="control-panel">
-                <!-- Scenario Description -->
-                <div class="panel-section" id="scenarioDescription" style="display: none;">
-                    <div class="section-title">Current Scenario</div>
-                    <div style="font-size: 11px; color: #ccc; line-height: 1.6; max-height: 200px; overflow-y: auto; white-space: pre-line;" id="scenarioDescText"></div>
+            <!-- Controls -->
+            <div class="panel-section">
+                <div class="section-title">Controls</div>
+                
+                <div class="control-group">
+                    <label>Scenario</label>
+                    <select id="scenario">
+                        <option value="scenario_1_simple">Scenario 1: Standard - Simple 1 Agent</option>
+                        <option value="scenario_2_multiple">Scenario 2: Multiple Agents - Concurrent</option>
+                        <option value="scenario_3_conflict">Scenario 3: Path Conflict - Head-On Avoidance</option>
+                        <option value="scenario_4_contention">Scenario 4: Station Contention - Resource Allocation</option>
+                        <option value="scenario_5_negotiation">Scenario 5: Assignment Negotiation</option>
+                        <option value="scenario_6_tit_for_tat">Scenario 6: Tit-for-Tat Behavioral Learning</option>
+                    </select>
                 </div>
                 
-                <!-- Controls -->
-                <div class="panel-section">
-                    <div class="section-title">Controls</div>
-                    
-                    <div class="control-group">
-                        <label>Scenario</label>
-                        <select id="scenario">
-                            <option value="scenario_1_simple">Scenario 1: Standard - Simple 1 Agent</option>
-                            <option value="scenario_2_multiple">Scenario 2: Multiple Agents - Concurrent</option>
-                            <option value="scenario_3_conflict">Scenario 3: Path Conflict - Head-On Avoidance</option>
-                            <option value="scenario_4_contention">Scenario 4: Station Contention - Resource Allocation</option>
-                            <option value="scenario_5_negotiation">Scenario 5: Assignment Negotiation</option>
-                        </select>
-                    </div>
-                    
-                    <div class="control-group">
-                        <label>Speed: <span class="speed-value" id="speedValue">2.0</span> steps/sec</label>
-                        <input type="range" id="speed" min="0.5" max="5" step="0.5" value="2">
-                    </div>
-                    
-                    <button id="startBtn" class="btn-start">Start</button>
-                    <button id="pauseBtn" class="btn-pause" disabled>Pause</button>
-                    <button id="resetBtn" class="btn-reset">Reset</button>
-                </div>
+                <button id="startBtn" class="btn-start">Start</button>
+                <button id="pauseBtn" class="btn-pause" disabled>Pause</button>
+                <button id="resetBtn" class="btn-reset">Reset</button>
+            </div>
                 
                 <!-- Status -->
                 <div class="panel-section">
@@ -704,7 +717,7 @@ HTML_TEMPLATE = """
         let ws = null;
         let isPaused = false;
         const logs = [];
-        const maxLogs = 30;
+        // Unlimited logs - removed maxLogs limit to show full negotiation history
         
         // Canvas
         const canvas = document.getElementById('simulationCanvas');
@@ -720,8 +733,6 @@ HTML_TEMPLATE = """
         const connectionStatusEl = document.getElementById('connectionStatus');
         
         const scenarioSelect = document.getElementById('scenario');
-        const speedInput = document.getElementById('speed');
-        const speedValueEl = document.getElementById('speedValue');
         const startBtn = document.getElementById('startBtn');
         const pauseBtn = document.getElementById('pauseBtn');
         const resetBtn = document.getElementById('resetBtn');
@@ -732,8 +743,6 @@ HTML_TEMPLATE = """
             
             ws.onopen = () => {
                 console.log('WebSocket connected');
-                connectionStatusEl.textContent = 'Connected';
-                connectionStatusEl.className = 'connection-status connected';
             };
             
             ws.onmessage = (event) => {
@@ -743,8 +752,6 @@ HTML_TEMPLATE = """
             
             ws.onclose = () => {
                 console.log('WebSocket disconnected');
-                connectionStatusEl.textContent = 'Disconnected';
-                connectionStatusEl.className = 'connection-status disconnected';
                 setTimeout(connect, 2000);
             };
             
@@ -887,27 +894,11 @@ HTML_TEMPLATE = """
                 
                 // Draw future path
                 if (v.current_path && v.current_path.length > 0) {
-                    ctx.strokeStyle = colors.path;
-                    ctx.lineWidth = 3;
-                    ctx.beginPath();
-                    
-                    // Start from current position
-                    const [startX, startY] = v.position;
-                    ctx.moveTo(startX * cellSize + cellSize / 2, startY * cellSize + cellSize / 2);
-                    
-                    // Draw path
+                    // Draw path cells with background fill (like trail)
+                    ctx.fillStyle = colors.path;
                     for (let i = v.path_index; i < v.current_path.length; i++) {
                         const [px, py] = v.current_path[i];
-                        ctx.lineTo(px * cellSize + cellSize / 2, py * cellSize + cellSize / 2);
-                    }
-                    
-                    ctx.stroke();
-                    
-                    // Draw waypoints
-                    ctx.fillStyle = colors.path.replace('0.7', '0.5');
-                    for (let i = v.path_index; i < v.current_path.length; i++) {
-                        const [px, py] = v.current_path[i];
-                        ctx.fillRect(px * cellSize + 8, py * cellSize + 8, cellSize - 16, cellSize - 16);
+                        ctx.fillRect(px * cellSize + 5, py * cellSize + 5, cellSize - 10, cellSize - 10);
                     }
                 }
                 
@@ -1007,7 +998,7 @@ HTML_TEMPLATE = """
             
             // Add to end (newest at bottom)
             logs.push(logHtml);
-            if (logs.length > maxLogs) logs.shift();  // Remove oldest from start
+            // No limit - keep all logs for full history
             
             logsListEl.innerHTML = logs.join('');
             
@@ -1032,11 +1023,6 @@ HTML_TEMPLATE = """
         document.head.appendChild(style);
         
         // Event Listeners
-        speedInput.addEventListener('input', (e) => {
-            speedValueEl.textContent = e.target.value;
-            send({ type: 'set_speed', speed: parseFloat(e.target.value) });
-        });
-        
         startBtn.addEventListener('click', () => {
             if (isPaused) {
                 send({ type: 'resume' });
@@ -1046,7 +1032,7 @@ HTML_TEMPLATE = """
                 send({ 
                     type: 'start',
                     scenario: scenarioSelect.value,
-                    speed: parseFloat(speedInput.value)
+                    speed: 3.0
                 });
             }
             startBtn.disabled = true;

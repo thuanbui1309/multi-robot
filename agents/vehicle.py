@@ -9,13 +9,7 @@ from core.planner import AStarPlanner
 from core.grid import Grid
 
 class VehicleAgent(Agent):
-    """
-    Autonomous vehicle agent that:
-    - Receives charging station assignments
-    - Plans path using A*
-    - Navigates while avoiding obstacles
-    - Reports status to orchestrator
-    """
+    """Autonomous vehicle with A* pathfinding, collision avoidance, and charging."""
     
     def __init__(
         self,
@@ -24,123 +18,76 @@ class VehicleAgent(Agent):
         position: Tuple[int, int],
         battery_level: float = 100.0,
         battery_drain_rate: float = 0.5,
-        charge_rate: float = 2.0,
+        charge_rate: float = 5.0,
         enable_negotiation: bool = False
     ):
-        """
-        Initialize vehicle agent.
-        
-        Args:
-            unique_id: Unique identifier for vehicle
-            model: Mesa model reference
-            position: Starting position
-            battery_level: Initial battery level (0-100)
-            battery_drain_rate: Battery drain per movement step
-            charge_rate: Charging rate per tick at station
-            enable_negotiation: Whether vehicle can negotiate assignments
-        """
         super().__init__(model)
         self.unique_id = unique_id
         
-        # Position and movement
         self.position = position
         self.path: List[Tuple[int, int]] = []
         self.path_index = 0
         
-        # Battery management
         self.battery_level = battery_level
         self.battery_drain_rate = battery_drain_rate
         self.charge_rate = charge_rate
-        self.battery_threshold = 30.0  # Request charging below this
+        self.battery_threshold = 30.0
         
-        # Status
         self.status = VehicleStatus.IDLE
         self.target_station: Optional[int] = None
         self.target_position: Optional[Tuple[int, int]] = None
         
-        # Planning
         self.planner = AStarPlanner()
         self.stuck_counter = 0
         self.max_stuck_time = 5
         
-        # Collision avoidance - Priority based on vehicle ID
         self.priority = self._extract_priority(unique_id)
         self.waiting_for_vehicle: Optional[str] = None
         self.wait_counter = 0
-        self.max_wait_time = 10  # Maximum ticks to wait before replanning
+        self.max_wait_time = 10
         
-        # Negotiation capabilities
         self.enable_negotiation = enable_negotiation
-        self.max_acceptable_distance = 10  # Max distance willing to travel (reduced from 15)
-        self.critical_battery_threshold = 25.0  # Below this, very selective
-        self.distance_preference_factor = 0.2  # Reject if alternative is 20% closer (more aggressive)
-        self.battery_safety_margin = 2.0  # Require 2x battery for distance (more conservative)
+        self.max_acceptable_distance = 10
+        self.critical_battery_threshold = 25.0
+        self.distance_preference_factor = 0.2
+        self.battery_safety_margin = 2.0
         
-        # Statistics
         self.total_distance = 0.0
         self.num_replans = 0
         self.charging_start_time: Optional[int] = None
         
-        # Charging request tracking
         self.has_requested_charging = False
     
     def _extract_priority(self, vehicle_id: str) -> int:
-        """
-        Extract priority from vehicle ID.
-        Lower ID number = Higher priority (goes first in conflicts).
-        
-        Args:
-            vehicle_id: Vehicle identifier (e.g., "vehicle_0", "vehicle_1")
-        
-        Returns:
-            Integer priority (lower number = higher priority)
-        """
+        """Extract priority from vehicle ID (lower number = higher priority)."""
         try:
-            # Extract number from "vehicle_N" format
             return int(vehicle_id.split('_')[1])
         except (IndexError, ValueError):
-            # Fallback: use hash if format is unexpected
             return hash(vehicle_id) % 1000
     
     @property
     def needs_charging(self) -> bool:
-        """Check if vehicle needs charging."""
         return self.battery_level < self.battery_threshold
     
     def _detect_collision_threat(self, next_pos: Tuple[int, int]) -> Optional[str]:
-        """
-        Detect if moving to next_pos would cause collision with another vehicle.
-        Implements priority-based detection from the algorithm.
-        
-        Args:
-            next_pos: Position we want to move to
-            
-        Returns:
-            ID of threatening vehicle if collision detected, None otherwise
-        """
-        # Check all other vehicles
+        """Check if moving to next_pos would collide with another vehicle."""
         for vehicle_id, vehicle in self.model.vehicles.items():
             if vehicle_id == self.unique_id:
                 continue
             
-            # Skip completed vehicles
             if vehicle.status == VehicleStatus.COMPLETED:
                 continue
                 
-            # Check if other vehicle is at our target position
             if vehicle.position == next_pos:
                 return vehicle_id
             
-            # Check if other vehicle is heading to same position (head-on)
             if (hasattr(vehicle, 'path') and vehicle.path and 
                 vehicle.path_index < len(vehicle.path)):
                 other_next = vehicle.path[vehicle.path_index]
                 
-                # Head-on collision: we go to their position, they come to ours
                 if other_next == self.position and next_pos == vehicle.position:
                     return vehicle_id
                 
-                # Same target next step
                 if other_next == next_pos:
                     return vehicle_id
         
@@ -148,25 +95,39 @@ class VehicleAgent(Agent):
     
     def _should_yield(self, other_vehicle_id: str) -> bool:
         """
-        Determine if this vehicle should yield to another based on priority.
-        Lower ID = Higher priority (proceeds first).
-        Higher ID = Lower priority (yields).
-        
-        Args:
-            other_vehicle_id: ID of the other vehicle
-            
-        Returns:
-            True if this vehicle should yield (wait), False if it has priority
+        Determine if should yield based on priority.
+        Priority: EXITING vehicles yield > Lower queue position > Lower ID.
         """
-        other_priority = self._extract_priority(other_vehicle_id)
+        other_vehicle = self.model.vehicles.get(other_vehicle_id)
+        if not other_vehicle:
+            return False
         
-        # Lower priority value = higher priority
-        # If our priority is higher (lower number), we don't yield
-        # If our priority is lower (higher number), we yield
+        if self.status == VehicleStatus.EXITING and other_vehicle.status != VehicleStatus.EXITING:
+            should_yield = True
+            if self.waiting_for_vehicle != other_vehicle_id:
+                self.model.log_activity(
+                    self.unique_id,
+                    f"CONFLICT DETECTED with {other_vehicle_id} - Yielding (I'm EXITING, they need to charge)",
+                    "warning"
+                )
+                self.waiting_for_vehicle = other_vehicle_id
+                self.wait_counter = 0
+            return True
+        
+        if other_vehicle.status == VehicleStatus.EXITING and self.status != VehicleStatus.EXITING:
+            if not hasattr(self, '_logged_priority_for') or self._logged_priority_for != other_vehicle_id:
+                self.model.log_activity(
+                    self.unique_id,
+                    f"CONFLICT DETECTED with {other_vehicle_id} - Proceeding (They're EXITING, I need to charge)",
+                    "info"
+                )
+                self._logged_priority_for = other_vehicle_id
+            return False
+        
+        other_priority = self._extract_priority(other_vehicle_id)
         should_yield = self.priority > other_priority
         
         if should_yield and self.waiting_for_vehicle != other_vehicle_id:
-            # Log yielding behavior with detailed priority info
             self.model.log_activity(
                 self.unique_id,
                 f"CONFLICT DETECTED with {other_vehicle_id} - Yielding (my priority={self.priority}, their priority={other_priority})",
@@ -175,7 +136,6 @@ class VehicleAgent(Agent):
             self.waiting_for_vehicle = other_vehicle_id
             self.wait_counter = 0
         elif not should_yield and other_vehicle_id:
-            # Log when we have priority
             if not hasattr(self, '_logged_priority_for') or self._logged_priority_for != other_vehicle_id:
                 self.model.log_activity(
                     self.unique_id,
@@ -187,32 +147,21 @@ class VehicleAgent(Agent):
         return should_yield
     
     def step(self):
-        """Execute one step of the vehicle's behavior."""
-        # If already completed, don't do anything
+        """Execute vehicle behavior: sense, plan, act, report."""
         if self.status == VehicleStatus.COMPLETED:
             return
         
-        # Main agent loop: sense -> plan -> act -> report
-        
-        # 1. SENSE - Update status based on environment
         self._sense()
         
-        # 2. REQUEST CHARGING if needed (proactive agent behavior)
         if self.needs_charging and not self.has_requested_charging and self.status == VehicleStatus.IDLE:
             self._request_charging()
         
-        # 3. PLAN - Decide next action
         self._plan()
-        
-        # 4. ACT - Execute action
         self._act()
-        
-        # 5. REPORT - Send status to orchestrator
         self._report_status()
     
     def _sense(self):
-        """Sense environment and update internal state."""
-        # Check if at charging station
+        """Update status based on environment."""
         grid: Grid = self.model.grid
         station = grid.get_station_at(self.position)
         
@@ -248,9 +197,6 @@ class VehicleAgent(Agent):
             "action"
         )
         
-        # Send status update which will trigger orchestrator assignment logic
-        # The orchestrator will detect low battery and assign a station
-    
     def _plan(self):
         """Plan next action based on current state."""
         if self.status == VehicleStatus.CHARGING:
@@ -267,23 +213,18 @@ class VehicleAgent(Agent):
                     "action"
                 )
             else:
-                # Wait for assignment
                 return
         
-        # Handle EXITING status - plan path to exit
         if self.status == VehicleStatus.EXITING and self.target_position and not self.path:
             self._plan_path_to_target()
         
-        # If we have a target but no path, plan path
         if self.target_position and not self.path:
             self._plan_path_to_target()
         
-        # Check if path is blocked and needs replanning
         if self.path and self.path_index < len(self.path):
             next_pos = self.path[self.path_index]
             grid: Grid = self.model.grid
             
-            # Check if next position is blocked
             if not grid.is_walkable(next_pos[0], next_pos[1]):
                 self._replan()
     
@@ -295,11 +236,9 @@ class VehicleAgent(Agent):
             return
         
         if self.status == VehicleStatus.IDLE:
-            # Stay in place, maybe drain a little battery
             old_battery = self.battery_level
             self.battery_level = max(0.0, self.battery_level - 0.1)
             
-            # Log when battery gets critically low
             if old_battery > 20 and self.battery_level <= 20:
                 self.model.log_activity(
                     self.unique_id,
@@ -308,34 +247,28 @@ class VehicleAgent(Agent):
                 )
             return
         
-        # Try to move along path
         if self.path and self.path_index < len(self.path):
             next_pos = self.path[self.path_index]
             
-            # COLLISION DETECTION: Check for potential collision with other vehicles
             threatening_vehicle = self._detect_collision_threat(next_pos)
             
             if threatening_vehicle:
-                # Collision threat detected - check priority
                 if self._should_yield(threatening_vehicle):
-                    # We have lower priority - WAIT
                     self.wait_counter += 1
                     
-                    # Log waiting (only once or when exceeding max wait)
                     if self.wait_counter == 1:
                         self.model.log_activity(
                             self.unique_id,
                             f"WAITING for {threatening_vehicle} to pass (conflict at {next_pos}, wait_count=1)",
                             "warning"
                         )
-                    elif self.wait_counter % 3 == 0:  # Log every 3 ticks while waiting
+                    elif self.wait_counter % 3 == 0:
                         self.model.log_activity(
                             self.unique_id,
-                            f"⏳ Still waiting for {threatening_vehicle} (wait_count={self.wait_counter})",
+                            f"Still waiting for {threatening_vehicle} (wait_count={self.wait_counter})",
                             "warning"
                         )
                     
-                    # If waited too long, try replanning
                     if self.wait_counter >= self.max_wait_time:
                         self.model.log_activity(
                             self.unique_id,
@@ -346,10 +279,8 @@ class VehicleAgent(Agent):
                         self.waiting_for_vehicle = None
                         self.wait_counter = 0
                     
-                    return  # Don't move this tick
-                # else: We have higher priority, proceed with movement
+                    return
             else:
-                # No collision threat - clear waiting state
                 if self.waiting_for_vehicle:
                     self.model.log_activity(
                         self.unique_id,
@@ -358,32 +289,26 @@ class VehicleAgent(Agent):
                     )
                     self.waiting_for_vehicle = None
                     self.wait_counter = 0
-                    # Clear the priority log tracker
                     if hasattr(self, '_logged_priority_for'):
                         delattr(self, '_logged_priority_for')
             
-            # Try to reserve next position
             reservation_table = self.model.reservation_table
             current_time = self.model.schedule.steps
             
             if reservation_table.reserve(next_pos, current_time + 1, self.unique_id):
-                # Move successful
                 old_pos = self.position
                 self.position = next_pos
                 self.path_index += 1
                 
-                # Update distance and drain battery
                 distance = abs(next_pos[0] - old_pos[0]) + abs(next_pos[1] - old_pos[1])
                 self.total_distance += distance
                 self.battery_level = max(0.0, self.battery_level - self.battery_drain_rate)
                 
-                # Only change status to MOVING if not already EXITING
                 if self.status != VehicleStatus.EXITING:
                     self.status = VehicleStatus.MOVING
                 self.stuck_counter = 0
                 
-                # Log movement - only once when starting movement
-                if self.path_index == 1:  # First step of the path
+                if self.path_index == 1:
                     total_steps = len(self.path)
                     if self.target_station is not None:
                         self.model.log_activity(
@@ -398,15 +323,12 @@ class VehicleAgent(Agent):
                             "info"
                         )
                 
-                # Release old reservation
                 reservation_table.release(old_pos, current_time, self.unique_id)
                 
-                # Check if reached goal
                 if self.path_index >= len(self.path):
                     self.path = []
                     self.path_index = 0
                     if self.position == self.target_position:
-                        # Check if exiting and reached exit
                         if self.status == VehicleStatus.EXITING:
                             self.status = VehicleStatus.COMPLETED
                             self.model.log_activity(
@@ -417,14 +339,13 @@ class VehicleAgent(Agent):
                         else:
                             self.status = VehicleStatus.IDLE
             else:
-                # Path blocked, increment stuck counter
                 self.stuck_counter += 1
                 if self.stuck_counter >= self.max_stuck_time:
                     self._replan()
                     self.stuck_counter = 0
     
     def _plan_path_to_target(self):
-        """Plan path to target position using A*."""
+        """Plan A* path to target position."""
         if not self.target_position:
             return
         
@@ -432,13 +353,11 @@ class VehicleAgent(Agent):
         reservation_table = self.model.reservation_table
         current_time = self.model.schedule.steps
         
-        # Get blocked cells from reservation table
         blocked = reservation_table.get_blocked_cells(
             current_time + 1,
             exclude_vehicle=self.unique_id
         )
         
-        # Plan path
         path, cost = self.planner.plan(
             start=self.position,
             goal=self.target_position,
@@ -448,7 +367,7 @@ class VehicleAgent(Agent):
         )
         
         if path:
-            self.path = path[1:]  # Exclude current position
+            self.path = path[1:]
             self.path_index = 0
             # Only change status to MOVING if not already EXITING
             if self.status != VehicleStatus.EXITING:
@@ -463,7 +382,6 @@ class VehicleAgent(Agent):
             
             # Try to reserve the path
             if not reservation_table.reserve_path(self.path, current_time + 1, self.unique_id):
-                # Couldn't reserve full path, will reserve step by step
                 pass
         else:
             # No path found
@@ -485,11 +403,9 @@ class VehicleAgent(Agent):
         current_time = self.model.schedule.steps
         reservation_table.release_future(self.unique_id, current_time)
         
-        # Clear current path
         self.path = []
         self.path_index = 0
         
-        # Plan new path
         self._plan_path_to_target()
         self.num_replans += 1
         
@@ -513,9 +429,68 @@ class VehicleAgent(Agent):
                 "action"
             )
         
+        station_pos = self.position
+        moved_away = False
+        exit_pos = grid.exit_position if grid.exit_position else None
+        directions = [(0, 1), (0, -1), (-1, 0), (1, 0)]  # down, up, left, right
+        
+        if exit_pos:
+            def exit_distance(direction):
+                dx, dy = direction
+                new_pos = (station_pos[0] + dx, station_pos[1] + dy)
+                return abs(new_pos[0] - exit_pos[0]) + abs(new_pos[1] - exit_pos[1])
+            directions = sorted(directions, key=exit_distance)
+        
+        for dx, dy in directions:
+            new_x = station_pos[0] + dx
+            new_y = station_pos[1] + dy
+            
+            # Check if position is valid and walkable
+            if (0 <= new_x < grid.width and 
+                0 <= new_y < grid.height and
+                grid.is_walkable(new_x, new_y)):
+                
+                # Check if no other vehicle is there OR planning to go there
+                occupied = False
+                for other_vehicle in self.model.vehicles.values():
+                    if other_vehicle.unique_id == self.unique_id:
+                        continue
+                    
+                    # Check current position
+                    if other_vehicle.position == (new_x, new_y):
+                        occupied = True
+                        break
+                    
+                    # Check if this is on their path (next step)
+                    if (hasattr(other_vehicle, 'path') and 
+                        other_vehicle.path and 
+                        other_vehicle.path_index < len(other_vehicle.path)):
+                        next_pos = other_vehicle.path[other_vehicle.path_index]
+                        if next_pos == (new_x, new_y):
+                            occupied = True
+                            break
+                
+                if not occupied:
+                    # Move to this position
+                    old_pos = self.position
+                    self.position = (new_x, new_y)
+                    moved_away = True
+                    self.model.log_activity(
+                        self.unique_id,
+                        f"Moved away from station {old_pos} → {self.position} to clear path",
+                        "info"
+                    )
+                    break
+        
+        if not moved_away:
+            self.model.log_activity(
+                self.unique_id,
+                f"Could not move away from station - all adjacent cells blocked/occupied",
+                "warning"
+            )
+        
         # Check if exit is configured
         if grid.exit_position:
-            # Head to exit
             self.status = VehicleStatus.EXITING
             self.target_station = None
             self.target_position = grid.exit_position
@@ -670,8 +645,6 @@ class VehicleAgent(Agent):
                 distance_diff = distance_to_assigned - min_distance
                 return False, f"battery_critical_prefer_closer (assigned_dist={distance_to_assigned}, closer_Station_{closest_station.station_id}_dist={min_distance:.1f}, diff={distance_diff:.1f}, will_wait_if_needed)"
         
-        # For non-critical battery, still check for significantly better alternatives
-        # Only consider available stations
         for station in grid.charging_stations:
             if station.station_id == assignment.station_id:
                 continue
@@ -679,12 +652,10 @@ class VehicleAgent(Agent):
                 dist = abs(self.position[0] - station.position[0]) + \
                        abs(self.position[1] - station.position[1])
                 
-                # If alternative is significantly closer (> 30% closer)
                 if dist < distance_to_assigned * (1 - self.distance_preference_factor):
                     distance_diff = distance_to_assigned - dist
                     return False, f"prefer_alternative_closer (assigned_dist={distance_to_assigned}, alternative_Station_{station.station_id}_dist={dist:.1f}, diff={distance_diff:.1f})"
         
-        # Assignment is acceptable
         self.model.log_activity(
             self.unique_id,
             f"Assignment acceptable, will proceed to Station_{assignment.station_id}",
@@ -698,14 +669,12 @@ class VehicleAgent(Agent):
         """
         grid: Grid = self.model.grid
         
-        # Log rejection
         self.model.log_activity(
             self.unique_id,
             f"Rejecting assignment to Station_{assignment.station_id} - Reason: {reason}",
             "warning"
         )
         
-        # Find alternative station proposal
         best_alternative = None
         best_distance = float('inf')
         

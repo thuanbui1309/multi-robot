@@ -112,10 +112,7 @@ class VehicleStationAssigner:
                 s_pos = station['position']
                 s_load = station.get('load', 0.0)
                 
-                # Calculate distance (Manhattan)
                 distance = abs(v_pos[0] - s_pos[0]) + abs(v_pos[1] - s_pos[1])
-                
-                # Calculate battery urgency (lower battery = higher urgency)
                 battery_urgency = (100.0 - v_battery) / 100.0
                 
                 # Calculate total cost

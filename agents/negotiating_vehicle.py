@@ -1,12 +1,4 @@
-"""
-Negotiating vehicle agent for Scenario 5.
-
-This vehicle can:
-1. Receive queue-based assignments
-2. Evaluate if assignment is acceptable
-3. Negotiate for better queue position
-4. Wait for consensus before moving
-"""
+"""Negotiating vehicle with queue-based assignment and negotiation capabilities."""
 
 from typing import Tuple, Optional, List
 from agents.vehicle import VehicleAgent, VehicleStatus
@@ -17,141 +9,184 @@ from core.messages import (
 
 
 class NegotiatingVehicle(VehicleAgent):
-    """
-    Vehicle agent with queue negotiation capabilities.
-    
-    Extends VehicleAgent with:
-    - Queue assignment evaluation
-    - Negotiation decision-making
-    - Consensus waiting
-    """
+    """Vehicle with queue negotiation and consensus waiting."""
     
     def __init__(self, unique_id, model, start_pos, battery_level=100.0):
         super().__init__(unique_id, model, position=start_pos, battery_level=battery_level)
         
-        # Negotiation state
         self.assigned_queue_position = None
         self.assigned_station = None
         self.all_assignments = {}
         self.consensus_reached = False
         self.waiting_for_consensus = False
         
-        # Message tracking (to avoid reprocessing)
         self.processed_message_ids = set()
         
-        # Negotiation parameters
-        self.max_acceptable_wait = 1  # Max acceptable queue position
-        self.urgency_multiplier = 1.5  # How urgency affects negotiation
+        self.max_acceptable_wait = 1
+        self.urgency_multiplier = 1.5
         
     def step(self):
-        """Override step to handle consensus waiting and queue management."""
-        # Process messages first
+        """Process negotiation messages then execute normal vehicle behavior."""
         self._process_negotiation_messages()
         
         # If waiting for consensus, don't move
         if self.waiting_for_consensus:
             self.model.log_activity(
                 self.unique_id,
-                f"⏳ Waiting for consensus (battery={self.battery_level:.1f}%)",
+                f"Waiting for consensus (battery={self.battery_level:.1f}%)",
                 "info"
             )
             return
             
-        # After consensus, all vehicles can move to the station immediately
-        # Queue management happens AT the station (only pos 0 can charge first)
-        # This optimizes waiting time - vehicles travel concurrently instead of sequentially
-                    
-        # Otherwise execute normal vehicle logic
         super().step()
     
     def _detect_collision_threat(self, next_pos):
-        """Override to allow multiple vehicles at charging stations.
-        
-        If the next position is a charging station, and another vehicle is there
-        IDLE (waiting for queue), we should not treat it as a collision.
-        Multiple vehicles can queue at the same station.
-        """
+        """Manage station access based on queue position (only position 0 can enter station)."""
         grid = self.model.grid
         station = grid.get_station_at(next_pos)
         
-        # Check all other vehicles
+        if station and hasattr(self, 'target_station') and station.station_id == self.target_station:
+            my_queue_pos = getattr(self, 'assigned_queue_position', None)
+            if my_queue_pos is not None and my_queue_pos != 0:
+                return -1
+            
+            my_queue_pos = getattr(self, 'assigned_queue_position', None)
+            
+            for vid, vehicle in self.model.vehicles.items():
+                if vid == self.unique_id:
+                    continue
+                
+                if (hasattr(vehicle, 'target_station') and vehicle.target_station == self.target_station):
+                    other_queue_pos = getattr(vehicle, 'assigned_queue_position', None)
+                    
+                    if my_queue_pos is None:
+                        if other_queue_pos is not None:
+                            if vehicle.status not in [VehicleStatus.EXITING, VehicleStatus.COMPLETED]:
+                                return vid
+                    
+                    elif other_queue_pos is not None:
+                        if other_queue_pos < my_queue_pos:
+                            if vehicle.status not in [VehicleStatus.EXITING, VehicleStatus.COMPLETED]:
+                                return vid
+                        elif (other_queue_pos > my_queue_pos and vehicle.position == next_pos):
+                            continue
+                    
+                    if vehicle.position == next_pos and other_queue_pos is None:
+                        if my_queue_pos is not None:
+                            continue
+                        else:
+                            return vid
+        
         for vehicle_id, vehicle in self.model.vehicles.items():
             if vehicle_id == self.unique_id:
                 continue
             
-            # Skip completed vehicles
             if vehicle.status == VehicleStatus.COMPLETED:
                 continue
             
-            # Check if other vehicle is at our target position
-            if vehicle.position == next_pos:
-                # SPECIAL CASE: If next_pos is a charging station and the vehicle
-                # there is IDLE (waiting for queue), allow us to approach
-                if station and vehicle.status == VehicleStatus.IDLE:
-                    # Check if it's their target station (they're waiting in queue)
-                    if hasattr(vehicle, 'target_station') and vehicle.target_station == station.station_id:
-                        continue  # Not a collision - they're waiting, we can approach
-                
+            if vehicle.position == next_pos and not station:
                 return vehicle_id
             
-            # Check if other vehicle is heading to same position (head-on)
             if (hasattr(vehicle, 'path') and vehicle.path and 
                 vehicle.path_index < len(vehicle.path)):
                 other_next = vehicle.path[vehicle.path_index]
                 
-                # Head-on collision: we go to their position, they come to ours
                 if other_next == self.position and next_pos == vehicle.position:
                     return vehicle_id
                 
-                # Same target next step
                 if other_next == next_pos:
-                    # Again, if it's a station and we're both going there for queue, allow it
-                    if station and hasattr(self, 'target_station') and self.target_station == station.station_id:
-                        if hasattr(vehicle, 'target_station') and vehicle.target_station == station.station_id:
-                            continue  # Both queueing at same station - not a collision
-                    
                     return vehicle_id
         
         return None
+    
+    def _should_yield(self, other_vehicle_id: str) -> bool:
+        """Use queue positions for priority when both vehicles target same station."""
+        if hasattr(self, 'target_station'):
+            other_vehicle = self.model.vehicles.get(other_vehicle_id)
+            if other_vehicle and hasattr(other_vehicle, 'target_station'):
+                if other_vehicle.target_station == self.target_station:
+                    my_queue_pos = getattr(self, 'assigned_queue_position', None)
+                    other_queue_pos = getattr(other_vehicle, 'assigned_queue_position', None)
+                    
+                    if my_queue_pos is None and other_queue_pos is not None:
+                        return True
+                    elif my_queue_pos is not None and other_queue_pos is None:
+                        return False
+                    elif my_queue_pos is not None and other_queue_pos is not None:
+                        return my_queue_pos > other_queue_pos
+        
+        return super()._should_yield(other_vehicle_id)
         
     def _sense(self):
-        """Override sense to check queue position before attempting to charge.
-        
-        This ensures vehicles respect the queue order at the station.
-        Only vehicles at position 0 in the queue can charge.
-        Others must wait even if at the station.
-        """
+        """Handle charging completion and queue-based station access."""
         grid = self.model.grid
-        station = grid.get_station_at(self.position)
         
-        # FIRST: Check if we're done charging (this must come before trying to occupy)
         if self.status == VehicleStatus.CHARGING and self.battery_level >= 90:
-            # Use parent's _complete_charging() which handles station release AND exit setup
             self._complete_charging()
-            # Mark that we've completed charging at this station
             self.charging_complete = True
             return
         
-        # If at a station
+        if self.status == VehicleStatus.CHARGING:
+            if hasattr(self, 'assigned_queue_position'):
+                for vid, vehicle in self.model.vehicles.items():
+                    if vid == self.unique_id:
+                        continue
+                    
+                    if (hasattr(vehicle, 'target_station') and vehicle.target_station == self.target_station and
+                        hasattr(vehicle, 'assigned_queue_position') and
+                        vehicle.assigned_queue_position < self.assigned_queue_position):
+                        if vehicle.status not in [VehicleStatus.EXITING, VehicleStatus.COMPLETED]:
+                            station = grid.get_station_at(self.position)
+                            if station:
+                                station.release(self.unique_id)
+                            self.status = VehicleStatus.IDLE
+                            self.path = []
+                            self.path_index = 0
+                            self.model.log_activity(
+                                self.unique_id,
+                                f"Yielding station to higher-priority {vid}",
+                                "info"
+                            )
+                            return
+        
+        station = grid.get_station_at(self.position)
         if station:
-            # Check if this is our target station
+            # Check if this is target station
             if station.station_id == self.target_station:
-                # Skip if we already completed charging here
                 if hasattr(self, 'charging_complete') and self.charging_complete:
                     return
                 
-                # Check if we have a queue position assigned
-                if hasattr(self, 'assigned_queue_position'):
-                    # Check if we can proceed (all vehicles ahead are done)
-                    if not self._check_can_proceed():
-                        # We must wait - set status to IDLE and clear path to prevent movement
-                        self.status = VehicleStatus.IDLE
-                        self.path = []
-                        self.path_index = 0
-                        self.target_position = None  # Also clear target to prevent replanning
-                        return
+                if not self._check_can_proceed():
+                    if self.status != VehicleStatus.CHARGING:
+                        station_pos = station.position
+                        adjacent_cells = [
+                            (station_pos[0] + dx, station_pos[1] + dy)
+                            for dx, dy in [(0, 1), (0, -1), (1, 0), (-1, 0)]
+                            if grid.is_valid_position(station_pos[0] + dx, station_pos[1] + dy)
+                        ]
+                        
+                        for adj_pos in adjacent_cells:
+                            occupied = False
+                            for vid, v in self.model.vehicles.items():
+                                if vid != self.unique_id and v.position == adj_pos:
+                                    occupied = True
+                                    break
+                            if not occupied and not grid.get_station_at(adj_pos):
+                                self.position = adj_pos
+                                self.model.log_activity(
+                                    self.unique_id,
+                                    f"Moved to {adj_pos} to wait for queue position {self.assigned_queue_position}",
+                                    "info"
+                                )
+                                return
+                        
+                        self.model.log_activity(
+                            self.unique_id,
+                            f"At station but waiting for queue position {self.assigned_queue_position} to be ready",
+                            "info"
+                        )
+                    return
                 
-                # Either no queue position or we can proceed - try to occupy
                 if station.occupy(self.unique_id):
                     self.status = VehicleStatus.CHARGING
                     self.charging_start_time = self.model.schedule.steps
@@ -170,17 +205,12 @@ class NegotiatingVehicle(VehicleAgent):
         ]
         
         for msg in messages_for_me:
-            # Create unique message ID
             msg_id = (msg.msg_type, msg.timestamp, msg.sender_id)
-            
-            # Skip if already processed
             if msg_id in self.processed_message_ids:
                 continue
                 
-            # Mark as processed
             self.processed_message_ids.add(msg_id)
             
-            # Process message
             if msg.msg_type == MessageType.QUEUE_ASSIGNMENT:
                 self._handle_queue_assignment(msg)
             elif msg.msg_type == MessageType.CONSENSUS_REACHED:
@@ -188,6 +218,28 @@ class NegotiatingVehicle(VehicleAgent):
                 
     def _handle_queue_assignment(self, msg: QueueAssignmentMessage):
         """Handle queue assignment from orchestrator."""
+        if self.consensus_reached:
+            old_pos = self.assigned_queue_position
+            self.assigned_station = msg.station_id
+            self.assigned_queue_position = msg.queue_position
+            self.all_assignments = msg.all_assignments
+            
+            if msg.queue_position == 0 and old_pos != 0:
+                for station in self.model.grid.charging_stations:
+                    if station.station_id == msg.station_id:
+                        self.target_position = station.position
+                        break
+            
+            if old_pos != msg.queue_position:
+                self.model.log_activity(
+                    self.unique_id,
+                    f"Queue position updated: {old_pos} → {msg.queue_position}" + 
+                    (" - My turn! Moving to station..." if msg.queue_position == 0 else " (still waiting)"),
+                    "success" if msg.queue_position == 0 else "info"
+                )
+            return
+        
+        # Initial assignment - proceed with negotiation process
         self.assigned_station = msg.station_id
         self.assigned_queue_position = msg.queue_position
         self.all_assignments = msg.all_assignments
@@ -195,7 +247,7 @@ class NegotiatingVehicle(VehicleAgent):
         
         self.model.log_activity(
             self.unique_id,
-            f"📨 Received assignment: Station_{msg.station_id}, Queue Position {msg.queue_position}/{msg.total_in_queue}",
+            f"Received assignment: Station_{msg.station_id}, Position {msg.queue_position} (out of {msg.total_in_queue} vehicles)",
             "info"
         )
         
@@ -218,31 +270,21 @@ class NegotiatingVehicle(VehicleAgent):
         queue_pos = msg.queue_position
         station_pos = msg.station_position
         
-        # Calculate distance to station
         distance = abs(self.position[0] - station_pos[0]) + abs(self.position[1] - station_pos[1])
-        
-        # Calculate battery urgency (0-10 scale)
         urgency = self._calculate_urgency()
-        
-        # Decision rules:
-        
-        # Rule 1: If critically low battery (< 20%) and not first in queue
+
         if self.battery_level < 20.0 and queue_pos > 0:
             return False, f"critical_battery (battery={self.battery_level:.1f}%, need position 0)"
             
-        # Rule 2: If very close to station but assigned late position
-        if distance <= 3 and queue_pos > 1:
+        if distance <= 2 and queue_pos > 2:
             return False, f"closer_position (distance={distance}, should be earlier)"
             
-        # Rule 3: If battery urgency high and queue position too late
-        if urgency >= 7.0 and queue_pos > self.max_acceptable_wait:
+        if urgency >= 8.0 and queue_pos > self.max_acceptable_wait:
             return False, f"urgent_task (urgency={urgency:.1f}, position {queue_pos} too late)"
             
-        # Rule 4: Check if another station has shorter queue and is closer
         for vid, (sid, qpos) in self.all_assignments.items():
             if sid != station_id:
                 other_station_pos = None
-                # Find station position from model
                 for station in self.model.grid.charging_stations:
                     if station.station_id == sid:
                         other_station_pos = station.position
@@ -252,11 +294,9 @@ class NegotiatingVehicle(VehicleAgent):
                     other_distance = abs(self.position[0] - other_station_pos[0]) + abs(self.position[1] - other_station_pos[1])
                     other_queue_length = sum(1 for v, (s, q) in self.all_assignments.items() if s == sid)
                     
-                    # If other station is closer AND has shorter queue
                     if other_distance < distance - 2 and other_queue_length < msg.total_in_queue:
                         return False, f"better_alternative (Station_{sid} is closer with shorter queue)"
                         
-        # Accept assignment
         return True, "acceptable"
         
     def _calculate_urgency(self) -> float:
@@ -267,10 +307,8 @@ class NegotiatingVehicle(VehicleAgent):
         - Battery level (lower = more urgent)
         - Distance to nearest station
         """
-        # Battery component (0-10): 100% → 0, 0% → 10
         battery_urgency = (100.0 - self.battery_level) / 10.0
         
-        # Apply multiplier for very low battery
         if self.battery_level < 20.0:
             battery_urgency *= self.urgency_multiplier
             
@@ -289,22 +327,18 @@ class NegotiatingVehicle(VehicleAgent):
         
         self.model.log_activity(
             self.unique_id,
-            f"✅ Accepted assignment: Station_{station_id}, Position {queue_pos}",
+            f"Accepted assignment: Station_{station_id}, Position {queue_pos}",
             "success"
         )
         
     def _send_negotiation(self, msg: QueueAssignmentMessage, reason: str):
         """Send negotiation message."""
-        # Determine desired position based on urgency
         urgency = self._calculate_urgency()
-        
-        # If critical battery, want position 0
+
         if self.battery_level < 20.0:
             desired_pos = 0
-        # If urgent, want earlier position
         elif urgency >= 7.0:
             desired_pos = max(0, msg.queue_position - 1)
-        # Otherwise, want one position earlier
         else:
             desired_pos = max(0, msg.queue_position - 1)
             
@@ -322,51 +356,86 @@ class NegotiatingVehicle(VehicleAgent):
         
         self.model.log_activity(
             self.unique_id,
-            f"💬 Negotiating: want position {desired_pos} (reason: {reason}, urgency={urgency:.1f})",
+            f"Negotiating: want position {desired_pos} (reason: {reason}, urgency={urgency:.1f})",
             "warning"
         )
         
     def _handle_consensus(self, msg: ConsensusReachedMessage):
         """Handle consensus reached message."""
         self.all_assignments = msg.final_assignments
-        self.waiting_for_consensus = False
-        self.consensus_reached = True
         
-        # Get our final assignment
+        # Get our assignment from the message
         if self.unique_id in msg.final_assignments:
             station_id, queue_pos = msg.final_assignments[self.unique_id]
+
+            if self.consensus_reached:
+                old_pos = self.assigned_queue_position
+                self.assigned_station = station_id
+                self.assigned_queue_position = queue_pos
+                
+                if queue_pos == 0 and old_pos != 0:
+                    for station in self.model.grid.charging_stations:
+                        if station.station_id == station_id:
+                            self.target_position = station.position
+                            break
+                
+                if old_pos != queue_pos:
+                    self.model.log_activity(
+                        self.unique_id,
+                        f"Queue position updated: {old_pos} → {queue_pos}" +
+                        (" - Now my turn! Moving to station..." if queue_pos == 0 else ""),
+                        "success" if queue_pos == 0 else "info"
+                    )
+                return
+            
+            self.waiting_for_consensus = False
+            self.consensus_reached = True
             self.assigned_station = station_id
             self.assigned_queue_position = queue_pos
             
             self.model.log_activity(
                 self.unique_id,
-                f"🚀 Consensus reached! Final assignment: Station_{station_id}, Position {queue_pos}",
+                f"Consensus reached! Final assignment: Station_{station_id}, Position {queue_pos}",
                 "success"
             )
             
-            # Find station position and set as target
             for station in self.model.grid.charging_stations:
                 if station.station_id == station_id:
-                    self.target_station = station_id  # VehicleAgent expects this
-                    self.target_position = station.position  # VehicleAgent expects this
+                    self.target_station = station_id
                     
-                    # If we're first in queue (position 0), we can start moving
-                    # If we're not first, we still set targets but DON'T transition from IDLE
                     if queue_pos == 0:
-                        # Status is already IDLE, VehicleAgent._plan() will detect target and transition to PLANNING
+                        self.target_position = station.position
                         self.model.log_activity(
                             self.unique_id,
-                            f"🎯 First in queue! Can proceed to Station_{station_id}",
+                            f"First in queue! Can proceed to Station_{station_id} at {station.position}",
                             "info"
                         )
                     else:
-                        # Set targets but stay IDLE (will check queue in step())
+                        station_pos = station.position
+                        grid = self.model.grid
+                        adjacent_cells = [
+                            (station_pos[0] + dx, station_pos[1] + dy)
+                            for dx, dy in [(0, 1), (0, -1), (1, 0), (-1, 0)]
+                            if grid.is_valid_position(station_pos[0] + dx, station_pos[1] + dy)
+                        ]
+                        
+                        best_wait_pos = None
+                        min_dist = float('inf')
+                        for adj_pos in adjacent_cells:
+                            if grid.get_station_at(adj_pos):
+                                continue
+
+                            dist = abs(self.position[0] - adj_pos[0]) + abs(self.position[1] - adj_pos[1])
+                            if dist < min_dist:
+                                min_dist = dist
+                                best_wait_pos = adj_pos
+                        
+                        self.target_position = best_wait_pos if best_wait_pos else station.position
                         self.model.log_activity(
                             self.unique_id,
-                            f"⏸️  Position {queue_pos} in queue. Waiting for turn... (targets set)",
+                            f"Position {queue_pos} in queue. Moving to wait at {self.target_position}...",
                             "info"
                         )
-                    break
                     break
                     
     def _check_can_proceed(self) -> bool:
@@ -380,16 +449,11 @@ class NegotiatingVehicle(VehicleAgent):
         if self.assigned_queue_position == 0:
             return True
             
-        # Check if all vehicles with lower queue position at our station have completed
         for vid, (sid, qpos) in self.all_assignments.items():
             if sid == self.assigned_station and qpos < self.assigned_queue_position:
-                # Check if this vehicle is still active
                 if vid in self.model.vehicles:
                     other_vehicle = self.model.vehicles[vid]
-                    # Vehicle ahead must have EXITING or COMPLETED before we can proceed
-                    # If they're still idle, planning, moving, or charging, we must wait
                     if other_vehicle.status not in [VehicleStatus.EXITING, VehicleStatus.COMPLETED]:
                         return False
                         
-        # All vehicles ahead completed, we can go
         return True

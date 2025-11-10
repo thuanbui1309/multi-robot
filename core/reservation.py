@@ -9,11 +9,7 @@ class ReservationTable:
     
     def __init__(self):
         """Initialize empty reservation table."""
-        # Structure: {time_step: {position: vehicle_id}}
         self.reservations: Dict[int, Dict[Tuple[int, int], str]] = defaultdict(dict)
-        
-        # Track all positions reserved by each vehicle
-        # Structure: {vehicle_id: {time_step: position}}
         self.vehicle_reservations: Dict[str, Dict[int, Tuple[int, int]]] = defaultdict(dict)
     
     def reserve(
