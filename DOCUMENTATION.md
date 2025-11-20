@@ -778,7 +778,7 @@ TFT robot learns and adapts, cooperative exploited, competitive faces retaliatio
 
 - **Python**: 3.10 or higher
 - **Anaconda**: For environment management
-- **Operating System**: Linux, macOS, or Windows with WSL
+- **Operating System**: Linux, macOS, or Windows (native support with .bat/.ps1 files)
 
 ### Installation Steps
 
@@ -789,14 +789,26 @@ cd multi-robot
 ```
 
 2. **Create Conda Environment**
+
+**Linux/macOS:**
 ```bash
 ./setup.sh
+```
+
+**Windows (Command Prompt):**
+```cmd
+setup.bat
+```
+
+**Windows (PowerShell):**
+```powershell
+.\setup.ps1
 ```
 
 This script:
 - Creates `multi_robot_system` conda environment
 - Installs all dependencies from `requirements.txt`
-- Configures Python 3.13
+- Configures Python 3.10+
 
 3. **Verify Installation**
 ```bash
@@ -808,8 +820,19 @@ python -c "import mesa; import scipy; import fastapi; print('All dependencies in
 
 #### Web Interface (Recommended)
 
+**Linux/macOS:**
 ```bash
 ./run_web.sh
+```
+
+**Windows (Command Prompt):**
+```cmd
+run_web.bat
+```
+
+**Windows (PowerShell):**
+```powershell
+.\run_web.ps1
 ```
 
 Then open browser: `http://localhost:8000`
